@@ -29,6 +29,7 @@ function makeGs() {
     splitActive:   { 1:false, 2:false, 3:false, 4:false, 5:false },
     splitHandIndex:{ 1:0, 2:0, 3:0, 4:0, 5:0 },
     doubled:       { 1:false, 2:false, 3:false, 4:false, 5:false },
+    splitBetPerHand: { 1:0, 2:0, 3:0, 4:0, 5:0 }, // snapshot of bet per hand at split time
     deck:          [],
     gameStatus:    'idle',
     activeSeats:   [],
@@ -331,16 +332,17 @@ function resolveMain(code, dealerBJ) {
     }
 
     if (gs.splitActive[sid]) {
-      const half = Math.floor(gs.bets[sid].main / 2);
+      // Each hand bet = the amount snapshotted at split time (= original main bet before any double)
+      const betPerHand = gs.splitBetPerHand[sid] || gs.bets[sid].main;
       for (const hk of ['hand1','hand2']) {
         const ps = score(gs.hands[sid][hk]);
         if (ps > 21) { gs.badges[sid] = [...(gs.badges[sid]||[]), { cls:'lose', text:'Bust' }]; continue; }
         if (dealerBJ) { gs.badges[sid] = [...(gs.badges[sid]||[]), { cls:'lose', text:'Lose' }]; continue; }
         if (dBust || ps > ds) {
-          player.wallet += half*2; totalWon += half*2;
+          player.wallet += betPerHand * 2; totalWon += betPerHand * 2;
           gs.badges[sid] = [...(gs.badges[sid]||[]), { cls:'win', text:'Win' }];
         } else if (ps === ds) {
-          player.wallet += half; totalWon += half;
+          player.wallet += betPerHand; totalWon += betPerHand;
           gs.badges[sid] = [...(gs.badges[sid]||[]), { cls:'push', text:'Push' }];
         } else {
           gs.badges[sid] = [...(gs.badges[sid]||[]), { cls:'lose', text:'Lose' }];
@@ -693,12 +695,14 @@ io.on('connection', (socket) => {
       const hand = gs.hands[sid];
       if (!Array.isArray(hand)||hand.length!==2) return;
       if (!player||player.wallet<gs.bets[sid].main) return;
-      player.wallet -= gs.bets[sid].main; player.totalBet += gs.bets[sid].main;
+      const betPerHand = gs.bets[sid].main; // snapshot BEFORE any modification
+      player.wallet -= betPerHand; player.totalBet += betPerHand;
       const [c1,c2] = hand;
       const n1 = gs.deck.pop(), n2 = gs.deck.pop();
       gs.hands[sid] = { hand1:[c1,n1], hand2:[c2,n2] };
       gs.splitActive[sid] = true;
       gs.splitHandIndex[sid] = 0;
+      gs.splitBetPerHand[sid] = betPerHand; // store per-hand bet
       broadcast(code);
       io.to(code).emit('yourTurn', { sid, ownerId:gs.seatOwners[sid], splitHandIndex:0 });
     }
