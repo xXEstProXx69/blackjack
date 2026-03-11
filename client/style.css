@@ -144,7 +144,10 @@ html,body{width:100%;height:100%;overflow:hidden;font-family:'Rajdhani',sans-ser
 .card img{width:100%;height:100%;object-fit:cover;display:block;}
 .player-hand .card{width:54px;height:76px;margin-left:-8px;}
 .player-hand .card:first-child{margin-left:0;}
-.card-back{width:66px;height:94px;border-radius:7px;background:repeating-linear-gradient(45deg,#3a4a9a,#3a4a9a 8px,#2a3580 8px,#2a3580 16px);border:2px solid rgba(255,255,255,0.3);box-shadow:3px 5px 14px rgba(0,0,0,0.7);margin-left:-10px;flex-shrink:0;animation:cardDeal .38s cubic-bezier(0.22,1,0.36,1) both;}
+.card-back{width:66px;height:94px;border-radius:7px;background:repeating-linear-gradient(45deg,#c0111a,#c0111a 8px,#8b0000 8px,#8b0000 16px);border:2px solid rgba(255,255,255,0.3);box-shadow:3px 5px 14px rgba(0,0,0,0.7);margin-left:-10px;flex-shrink:0;animation:cardDeal .38s cubic-bezier(0.22,1,0.36,1) both;}
+/* card-old = no animation; card-new = animate */
+.card-old,.card-back.card-old{animation:none!important;}
+.card-new{animation:cardDeal .38s cubic-bezier(0.22,1,0.36,1) both;}
 .card-back:first-child{margin-left:0;}
 .player-hand .card-back{width:54px;height:76px;margin-left:-8px;}
 .player-hand .card-back:first-child{margin-left:0;}
@@ -214,6 +217,22 @@ html,body{width:100%;height:100%;overflow:hidden;font-family:'Rajdhani',sans-ser
 .setting-control{display:flex;align-items:center;gap:10px;}
 .setting-control input[type=range]{width:110px;accent-color:#ffd700;cursor:pointer;}
 #sfx-vol-label{color:#ffd700;font-weight:700;min-width:36px;font-size:.9rem;}
+#settings-close-btn{display:block;width:100%;padding:11px;background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.15);color:rgba(255,255,255,0.7);border-radius:10px;font-family:'Rajdhani',sans-serif;font-weight:700;font-size:.9rem;letter-spacing:.08em;cursor:pointer;margin-top:10px;}
+#settings-close-btn:hover{background:rgba(255,255,255,0.13);color:#fff;}
+
+/* ===== REGISTER SCREEN ===== */
+#register-screen{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:radial-gradient(ellipse at 50% 30%,#1a4a2e 0%,#0a1a0f 100%);z-index:1010;}
+#register-card{background:rgba(0,0,0,0.82);border:1px solid rgba(255,215,0,0.2);border-radius:20px;padding:42px 48px 36px;width:360px;text-align:center;box-shadow:0 24px 80px rgba(0,0,0,0.6);}
+#register-card h2{font-family:'Playfair Display',serif;font-size:1.5rem;color:#fff;margin:0 0 6px;}
+#register-card p{font-family:'Rajdhani',sans-serif;color:rgba(255,255,255,0.45);font-size:.83rem;letter-spacing:.08em;margin:0 0 28px;}
+.reg-input{width:100%;box-sizing:border-box;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.18);border-radius:10px;color:#fff;font-family:'Rajdhani',sans-serif;font-size:1rem;padding:11px 16px;margin-bottom:14px;outline:none;transition:border-color .2s;}
+.reg-input:focus{border-color:rgba(255,215,0,0.5);}
+#reg-error{color:#ff6b6b;font-family:'Rajdhani',sans-serif;font-size:.88rem;margin-bottom:12px;}
+#auth-banner{font-family:'Rajdhani',sans-serif;font-size:.82rem;color:rgba(255,215,0,0.8);background:rgba(255,215,0,0.1);border:1px solid rgba(255,215,0,0.2);border-radius:8px;padding:7px 14px;margin-bottom:16px;letter-spacing:.04em;}
+#auth-logout{background:transparent;border:1px solid rgba(255,80,80,0.35);color:rgba(255,120,120,0.75);font-family:'Rajdhani',sans-serif;font-size:.75rem;font-weight:700;letter-spacing:.1em;border-radius:8px;padding:5px 12px;cursor:pointer;margin-bottom:16px;transition:all .18s;}
+#auth-logout:hover{background:rgba(255,80,80,0.18);color:#fff;}
+#btn-show-register{background:transparent;border:none;color:rgba(255,215,0,0.6);font-family:'Rajdhani',sans-serif;font-size:.8rem;font-weight:700;letter-spacing:.06em;cursor:pointer;text-decoration:underline;margin-top:12px;display:block;width:100%;}
+#btn-show-register:hover{color:#ffd700;}
 
 /* ===== LEAVE SEAT BUTTON ===== */
 .leave-seat-btn{display:none;width:38px;height:38px;border-radius:50%;border:2px solid rgba(198,40,40,0.5);background:rgba(198,40,40,0.12);color:rgba(255,120,120,0.85);font-size:.75rem;font-weight:700;cursor:pointer;transition:all .18s;margin:4px auto 0;align-items:center;justify-content:center;font-family:'Rajdhani',sans-serif;line-height:1;}
@@ -298,7 +317,8 @@ html,body{width:100%;height:100%;overflow:hidden;font-family:'Rajdhani',sans-ser
 /* ===== TABLE INFO PANEL ===== */
 #table-info-panel{position:absolute;top:14px;left:14px;z-index:80;font-family:'Rajdhani',sans-serif;}
 #table-info-bar{display:flex;align-items:center;gap:8px;background:rgba(10,10,20,0.88);border:1px solid rgba(255,255,255,0.1);border-radius:8px;padding:6px 12px;cursor:default;user-select:none;backdrop-filter:blur(12px);white-space:nowrap;}
-#table-info-x{font-size:.7rem;color:rgba(255,255,255,0.4);width:16px;height:16px;display:flex;align-items:center;justify-content:center;border:1px solid rgba(255,255,255,0.15);border-radius:50%;flex-shrink:0;}
+#table-info-x{font-size:.7rem;color:rgba(255,255,255,0.7);width:18px;height:18px;display:flex;align-items:center;justify-content:center;border:1px solid rgba(255,255,255,0.3);border-radius:50%;flex-shrink:0;cursor:pointer;transition:all .18s;background:rgba(255,80,80,0.1);}
+#table-info-x:hover{background:rgba(255,80,80,0.35);border-color:rgba(255,120,120,0.7);color:#fff;transform:scale(1.15);}
 #table-info-title{font-size:.78rem;font-weight:600;color:#fff;letter-spacing:.03em;}
 #table-info-limits{color:#ff9800;font-weight:700;font-size:.78rem;}
 #table-info-pin{font-size:.7rem;opacity:.5;flex-shrink:0;}
