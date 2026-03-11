@@ -1,6 +1,5 @@
 // =============================================================
-// BLACKJACK MULTIPLAYER SERVER
-// Node.js + Socket.io + Express
+// BLACKJACK MULTIPLAYER SERVER — Fixed
 // =============================================================
 const express   = require('express');
 const http      = require('http');
@@ -14,7 +13,6 @@ const io     = new Server(server, { cors: { origin: '*' } });
 app.use(express.static(path.join(__dirname, 'client')));
 
 // ── Rooms ──────────────────────────────────────────────────
-// rooms[code] = { code, gs, players, betTimerTimeout }
 const rooms = {};
 
 function makeCode() {
@@ -33,19 +31,23 @@ function makeGs() {
     doubled:       { 1:false, 2:false, 3:false, 4:false, 5:false },
     deck:          [],
     gameStatus:    'idle',
-    activeSeats:   [],         // string[] seats with a main bet
-    seatOwners:    {},         // { [sid]: socketId }
+    activeSeats:   [],
+    seatOwners:    {},
     currentSeatIndex: 0,
-    stoodSeats:    [],         // array (JSON-safe version of Set)
+    stoodSeats:    [],
     insurance:     {},
-    badges:        {},         // { [sid]: {cls, text}[] }
-    sideBetWins:   {},         // { [sid]: { pp?: {mult,payout}, sp?: {mult,payout} } }
-    bustSeats:     {},         // { [sid]: number } bust value
+    insurancePhase: false,
+    insuranceDone:  false,
+    insuranceResponses: null,
+    badges:        {},
+    sideBetWins:   {},
+    bustSeats:     {},
     roundSideBetWon: 0,
-    betHistory:    [],         // [{ socketId, sid, type, amt, groupId }]
-    lastRoundBets: {},         // { [socketId]: [{sid,type,amt}] }
-    readyPlayers:  [],         // socketIds who clicked Deal
-    betsLocked:    false,      // true once first player clicks Deal
+    betHistory:    [],
+    lastRoundBets: {},
+    readyPlayers:  [],
+    betsLocked:    false,
+    dealerRevealed: false,
   };
 }
 
@@ -60,7 +62,6 @@ function buildDeck() {
   return d;
 }
 
-// ── Score ────────────────────────────────────────────────────
 function score(hand) {
   if (!Array.isArray(hand) || hand.length === 0) return 0;
   let total = 0, aces = 0;
@@ -71,12 +72,6 @@ function score(hand) {
   }
   while (total > 21 && aces > 0) { total -= 10; aces--; }
   return total;
-}
-
-function cardNum(c) {
-  if (['J','Q','K'].includes(c.value)) return 10;
-  if (c.value === 'A') return 11;
-  return parseInt(c.value);
 }
 
 function suitColor(s) { return ['H','D'].includes(s) ? 'red' : 'black'; }
@@ -94,13 +89,11 @@ function twentyOneThreePayout(cards) {
   const isSeq = (ranks[2]-ranks[1]===1 && ranks[1]-ranks[0]===1) ||
                 JSON.stringify(ranks) === JSON.stringify([2,3,14]) ||
                 JSON.stringify(ranks) === JSON.stringify([12,13,14]);
-  const isFlush = allSameSuit;
-  const isStraight = isSeq;
-  if (isTrips && isFlush) return 100;
-  if (isStraight && isFlush) return 40;
+  if (isTrips && allSameSuit) return 100;
+  if (isSeq && allSameSuit) return 40;
   if (isTrips) return 30;
-  if (isStraight) return 10;
-  if (isFlush) return 5;
+  if (isSeq) return 10;
+  if (allSameSuit) return 5;
   return 0;
 }
 
@@ -108,22 +101,11 @@ function twentyOneThreePayout(cards) {
 function broadcast(code) {
   const room = rooms[code];
   if (!room) return;
-  // Build per-player view (each client gets their own wallet info)
   const players = {};
   for (const [sid, p] of Object.entries(room.players)) {
-    players[sid] = { name: p.name, wallet: p.wallet, totalBet: p.totalBet };
+    players[sid] = { name: p.name, wallet: p.wallet, totalBet: p.totalBet, isHost: p.isHost };
   }
   io.to(code).emit('stateUpdate', { gs: room.gs, players, code });
-}
-
-function broadcastToSocket(socketId, code) {
-  const room = rooms[code];
-  if (!room) return;
-  const players = {};
-  for (const [sid, p] of Object.entries(room.players)) {
-    players[sid] = { name: p.name, wallet: p.wallet, totalBet: p.totalBet };
-  }
-  io.to(socketId).emit('stateUpdate', { gs: room.gs, players, code });
 }
 
 // ── Dealing helpers ──────────────────────────────────────────
@@ -160,9 +142,7 @@ function startBetTimer(code) {
     if (room.betTimerSecsLeft <= 0) {
       clearInterval(room.betTimerTimeout);
       room.betTimerTimeout = null;
-      if (room.gs.activeSeats.length > 0) {
-        startDeal(code);
-      }
+      if (room.gs.activeSeats.length > 0) startDeal(code);
     }
   }, 1000);
 }
@@ -220,18 +200,16 @@ function checkBJ(code) {
   const room = rooms[code];
   const { gs, players } = room;
 
-  // If dealer's up-card is an Ace, offer insurance first
-  // (up-card is index 0; hole card is index 1, still hidden)
   const dealerUpCard = gs.hands.dealer[0];
-  if (dealerUpCard && dealerUpCard.value === 'A' && !gs.insurancePhase && !gs.insuranceResponses) {
+  // Only offer insurance if ace showing, not yet offered, and not already done
+  if (dealerUpCard && dealerUpCard.value === 'A' && !gs.insurancePhase && !gs.insuranceDone) {
     offerInsurance(code);
-    return; // checkBJ will be called again after all players respond
+    return;
   }
 
   const dBJ = score(gs.hands.dealer) === 21 && gs.hands.dealer.length === 2;
 
   if (dBJ) {
-    // Resolve insurance, then end round
     for (const sid of gs.activeSeats) {
       const ownerId = gs.seatOwners[sid];
       const player  = players[ownerId];
@@ -239,13 +217,14 @@ function checkBJ(code) {
       const ins = gs.insurance[sid] || 0;
       if (ins > 0) { player.wallet += ins * 3; }
     }
-    // Pay player BJs (push), lose everyone else
     resolveMain(code, true);
     return;
   }
-  // No dealer BJ — pay player BJs
+
+  // Pay player BJs
   for (const sid of gs.activeSeats) {
-    const pBJ = score(gs.hands[sid]) === 21 && Array.isArray(gs.hands[sid]) && gs.hands[sid].length === 2;
+    const hand = Array.isArray(gs.hands[sid]) ? gs.hands[sid] : [];
+    const pBJ = score(hand) === 21 && hand.length === 2;
     if (pBJ) {
       const ownerId = gs.seatOwners[sid];
       const player  = players[ownerId];
@@ -257,7 +236,6 @@ function checkBJ(code) {
     }
   }
   broadcast(code);
-  // Start play
   gs.gameStatus = 'playing';
   gs.currentSeatIndex = 0;
   advancePlay(code);
@@ -269,7 +247,6 @@ function advancePlay(code) {
   const { gs } = room;
   const rtl = [...gs.activeSeats].map(Number).sort((a,b)=>b-a).map(String);
 
-  // Skip BJ seats
   while (gs.currentSeatIndex < rtl.length) {
     const sid = rtl[gs.currentSeatIndex];
     const hasBJ = (gs.badges[sid]||[]).some(b => b.cls === 'bj');
@@ -278,33 +255,28 @@ function advancePlay(code) {
   }
 
   if (gs.currentSeatIndex >= rtl.length) {
-    // All done — dealer turn
     dealerTurn(code);
     return;
   }
 
   const sid = rtl[gs.currentSeatIndex];
   gs.gameStatus = 'playing';
-  io.to(code).emit('yourTurn', { sid, ownerId: gs.seatOwners[sid] });
+  if (gs.splitActive[sid]) gs.splitHandIndex[sid] = 0;
+  io.to(code).emit('yourTurn', { sid, ownerId: gs.seatOwners[sid], splitHandIndex: gs.splitHandIndex[sid] });
   broadcast(code);
 }
 
 function playerBust(code, sid) {
   const room = rooms[code];
   const { gs } = room;
-  const hk = gs.splitActive[sid] ? 'hand'+(gs.splitHandIndex[sid]+1) : null;
-  const bustHand = hk ? gs.hands[sid][hk] : gs.hands[sid];
-  const val = score(bustHand);
-  gs.bustSeats[sid] = val;
   broadcast(code);
-
   setTimeout(() => {
     if (gs.splitActive[sid] && gs.splitHandIndex[sid] === 0) {
       gs.splitHandIndex[sid] = 1;
       broadcast(code);
       const rtl = [...gs.activeSeats].map(Number).sort((a,b)=>b-a).map(String);
       const sid2 = rtl[gs.currentSeatIndex];
-      io.to(code).emit('yourTurn', { sid: sid2, ownerId: gs.seatOwners[sid2] });
+      io.to(code).emit('yourTurn', { sid: sid2, ownerId: gs.seatOwners[sid2], splitHandIndex: 1 });
     } else {
       gs.currentSeatIndex++;
       advancePlay(code);
@@ -317,7 +289,6 @@ function dealerTurn(code) {
   const room = rooms[code];
   const { gs } = room;
   gs.gameStatus = 'dealer_turn';
-  gs.hands.dealer[1] = gs.hands.dealer[1]; // reveal hole card
   gs.dealerRevealed = true;
   broadcast(code);
 
@@ -350,7 +321,6 @@ function resolveMain(code, dealerBJ) {
     const hasBJ = (gs.badges[sid]||[]).some(b => b.cls === 'bj');
     if (hasBJ) {
       if (dealerBJ) {
-        // Push — return stake
         player.wallet += gs.bets[sid].main;
         totalWon += gs.bets[sid].main;
         gs.badges[sid] = [...(gs.badges[sid]||[]), { cls:'push', text:'Push' }];
@@ -393,12 +363,9 @@ function resolveMain(code, dealerBJ) {
     }
   }
 
-  const grand = totalWon + gs.roundSideBetWon;
   gs.gameStatus = 'game_over';
-  gs.grandTotal  = grand;
+  gs.grandTotal  = totalWon + gs.roundSideBetWon;
   broadcast(code);
-
-  // Schedule new round
   setTimeout(() => newRound(code), 4000);
 }
 
@@ -408,25 +375,20 @@ function newRound(code) {
   if (!room) return;
   const { gs } = room;
 
-  // Save last round bets per player
   const byPlayer = {};
   for (const entry of gs.betHistory) {
     if (!byPlayer[entry.socketId]) byPlayer[entry.socketId] = [];
     byPlayer[entry.socketId].push({ sid: entry.sid, type: entry.type, amt: entry.amt });
   }
-  gs.lastRoundBets = byPlayer;
 
-  // Reset
   const savedOwners = { ...gs.seatOwners };
   Object.assign(gs, makeGs());
-  gs.seatOwners  = savedOwners;
-  gs.gameStatus  = 'betting';
-  gs.deck        = buildDeck();
+  gs.seatOwners    = savedOwners;
+  gs.gameStatus    = 'betting';
+  gs.deck          = buildDeck();
   gs.lastRoundBets = byPlayer;
 
-  // Reset per-player totalBet
   for (const p of Object.values(room.players)) p.totalBet = 0;
-
   broadcast(code);
 }
 
@@ -434,9 +396,10 @@ function newRound(code) {
 async function startDeal(code) {
   cancelBetTimer(code);
   const room = rooms[code];
+  if (!room) return;
   const { gs } = room;
-
   if (gs.activeSeats.length === 0) return;
+
   gs.gameStatus = 'dealing';
   gs.deck = buildDeck();
   initHandsForSeats(gs);
@@ -445,19 +408,21 @@ async function startDeal(code) {
   gs.bustSeats   = {};
   gs.grandTotal  = null;
   gs.dealerRevealed = false;
+  gs.insuranceDone  = false;
+  gs.insurancePhase = false;
+  gs.insuranceResponses = null;
+  gs.insurance   = {};
 
   const rtl = [...gs.activeSeats].map(Number).sort((a,b)=>b-a).map(String);
 
-  // Round 1 — player cards + dealer up
   for (const sid of rtl) { dealTo(gs, sid); broadcast(code); await delay(300); }
   dealTo(gs, 'dealer'); broadcast(code); await delay(300);
-  // Round 2 — player cards + dealer hole (hidden)
   for (const sid of rtl) { dealTo(gs, sid); broadcast(code); await delay(300); }
   dealTo(gs, 'dealer'); broadcast(code); await delay(300);
 
   resolveSideBets(code);
   broadcast(code);
-  await delay(300);
+  await delay(400);
   checkBJ(code);
 }
 
@@ -466,71 +431,93 @@ function delay(ms) { return new Promise(r => setTimeout(r, ms)); }
 // ── Insurance ────────────────────────────────────────────────
 function offerInsurance(code) {
   const room = rooms[code];
+  if (!room) return;
   const { gs } = room;
   gs.insurancePhase = true;
   gs.insuranceResponses = {};
   broadcast(code);
   io.to(code).emit('insuranceOffer');
+
+  // Auto-timeout after 15s
+  setTimeout(() => {
+    if (!rooms[code] || !gs.insurancePhase) return;
+    const needResponse = new Set(Object.values(gs.seatOwners));
+    for (const id of needResponse) {
+      if (!gs.insuranceResponses[id]) gs.insuranceResponses[id] = true;
+    }
+    gs.insurancePhase = false;
+    gs.insuranceDone  = true;
+    broadcast(code);
+    checkBJ(code);
+  }, 15000);
+}
+
+// ── Host reassignment ─────────────────────────────────────────
+function reassignHost(room) {
+  const entries = Object.entries(room.players).sort((a,b) => a[1].joinOrder - b[1].joinOrder);
+  if (entries.length === 0) return null;
+  const [newHostId, newHostPlayer] = entries[0];
+  for (const p of Object.values(room.players)) p.isHost = false;
+  newHostPlayer.isHost = true;
+  return newHostId;
 }
 
 // ── Socket.io ─────────────────────────────────────────────────
 io.on('connection', (socket) => {
   console.log('connect', socket.id);
 
-  // ── Create Room
   socket.on('createRoom', ({ name, wallet }) => {
     const code = makeCode();
-    rooms[code] = {
-      code,
-      gs: makeGs(),
-      players: {},
-      betTimerTimeout: null,
-    };
+    rooms[code] = { code, gs: makeGs(), players: {}, betTimerTimeout: null, joinCounter: 1 };
     rooms[code].gs.gameStatus = 'betting';
     rooms[code].gs.deck = buildDeck();
-    rooms[code].players[socket.id] = { name, wallet: wallet || 5000, totalBet: 0 };
+    rooms[code].players[socket.id] = { name, wallet: wallet||5000, totalBet:0, isHost:true, joinOrder:1 };
     socket.join(code);
     socket.data.code = code;
     socket.data.name = name;
-    socket.emit('roomJoined', { code, socketId: socket.id });
+    socket.emit('roomJoined', { code, socketId: socket.id, isHost: true });
     broadcast(code);
-    console.log(`Room ${code} created by ${name}`);
   });
 
-  // ── Join Room
   socket.on('joinRoom', ({ code, name, wallet }) => {
     const room = rooms[code];
     if (!room) { socket.emit('roomError', 'Room not found'); return; }
     if (Object.keys(room.players).length >= 5) { socket.emit('roomError', 'Room is full'); return; }
-    room.players[socket.id] = { name, wallet: wallet || 5000, totalBet: 0 };
+    room.joinCounter = (room.joinCounter||0) + 1;
+    room.players[socket.id] = { name, wallet:wallet||5000, totalBet:0, isHost:false, joinOrder:room.joinCounter };
     socket.join(code);
     socket.data.code = code;
     socket.data.name = name;
-    socket.emit('roomJoined', { code, socketId: socket.id });
+    socket.emit('roomJoined', { code, socketId: socket.id, isHost: false });
+    socket.emit('launchGame'); // Joiners auto-launch
     broadcast(code);
-    console.log(`${name} joined room ${code}`);
   });
 
-  // ── Claim Seat
+  socket.on('startGame', () => {
+    const code = socket.data.code;
+    const room = rooms[code];
+    if (!room) return;
+    if (!room.players[socket.id]?.isHost) return;
+    io.to(code).emit('launchGame');
+  });
+
   socket.on('claimSeat', ({ sid }) => {
     const code = socket.data.code;
     const room = rooms[code];
     if (!room) return;
     const { gs } = room;
-    if (gs.gameStatus !== 'betting' && gs.gameStatus !== 'idle') return;
-    if (gs.seatOwners[sid]) return; // already claimed
+    if (!['betting','idle'].includes(gs.gameStatus)) return;
+    if (gs.seatOwners[sid]) return;
     gs.seatOwners[sid] = socket.id;
     broadcast(code);
   });
 
-  // ── Leave Seat
   socket.on('leaveSeat', ({ sid }) => {
     const code = socket.data.code;
     const room = rooms[code];
     if (!room) return;
     const { gs, players } = room;
     if (gs.seatOwners[sid] !== socket.id) return;
-    // Refund bets
     const player = players[socket.id];
     if (player) {
       player.wallet += gs.bets[sid].main + gs.bets[sid].pp + gs.bets[sid].sp;
@@ -542,7 +529,6 @@ io.on('connection', (socket) => {
     broadcast(code);
   });
 
-  // ── Place Bet
   socket.on('placeBet', ({ sid, type, amt }) => {
     const code = socket.data.code;
     const room = rooms[code];
@@ -550,297 +536,216 @@ io.on('connection', (socket) => {
     const { gs, players } = room;
     if (!['betting','idle'].includes(gs.gameStatus)) return;
     if (gs.seatOwners[sid] !== socket.id) return;
-
     const player = players[socket.id];
     if (!player || player.wallet < amt) return;
-
     const maxBet = type === 'main' ? 10000 : 2000;
     const current = gs.bets[sid][type] || 0;
     if (current >= maxBet) return;
     const allowed = Math.min(amt, maxBet - current);
-
     player.wallet   -= allowed;
-    player.totalBet  = (player.totalBet || 0) + allowed;
+    player.totalBet  = (player.totalBet||0) + allowed;
     gs.bets[sid][type] += allowed;
     gs.gameStatus = 'betting';
-
     if (type === 'main' && !gs.activeSeats.includes(sid)) gs.activeSeats.push(sid);
-
-    const groupId = 'grp_' + Date.now() + '_' + Math.random();
-    gs.betHistory.push({ socketId: socket.id, sid, type, amt: allowed, groupId });
-
-    // Mirror to other seats owned by same player
-    const mySeats = Object.entries(gs.seatOwners)
-      .filter(([s, id]) => id === socket.id && s !== sid)
-      .map(([s]) => s);
-
+    const groupId = 'grp_'+Date.now()+'_'+Math.random();
+    gs.betHistory.push({ socketId:socket.id, sid, type, amt:allowed, groupId });
+    const mySeats = Object.entries(gs.seatOwners).filter(([s,id])=>id===socket.id&&s!==sid).map(([s])=>s);
     for (const other of mySeats) {
-      const oMax = type === 'main' ? 10000 : 2000;
-      const oCur = gs.bets[other][type] || 0;
-      if (type === 'main' || gs.bets[other].main > 0) {
-        if (oCur < oMax && player.wallet >= allowed) {
-          player.wallet   -= allowed;
-          player.totalBet += allowed;
+      const oMax = type==='main'?10000:2000;
+      const oCur = gs.bets[other][type]||0;
+      if (type==='main'||gs.bets[other].main>0) {
+        if (oCur<oMax && player.wallet>=allowed) {
+          player.wallet -= allowed; player.totalBet += allowed;
           gs.bets[other][type] += allowed;
-          if (type === 'main' && !gs.activeSeats.includes(other)) gs.activeSeats.push(other);
-          gs.betHistory.push({ socketId: socket.id, sid: other, type, amt: allowed, groupId });
+          if (type==='main'&&!gs.activeSeats.includes(other)) gs.activeSeats.push(other);
+          gs.betHistory.push({ socketId:socket.id, sid:other, type, amt:allowed, groupId });
         }
       }
     }
-
     broadcast(code);
     if (!room.betTimerTimeout) startBetTimer(code);
   });
 
-  // ── Undo Bet
   socket.on('undoBet', () => {
     const code = socket.data.code;
     const room = rooms[code];
     if (!room) return;
     const { gs, players } = room;
-    if (gs.betsLocked) return;  // bets locked once Deal is clicked
+    if (gs.betsLocked) return;
     const player = players[socket.id];
     if (!player) return;
-
-    // Find last groupId for this player
-    const mine = gs.betHistory.filter(e => e.socketId === socket.id);
-    if (mine.length === 0) return;
+    const mine = gs.betHistory.filter(e=>e.socketId===socket.id);
+    if (!mine.length) return;
     const lastGroup = mine[mine.length-1].groupId;
-    const toRemove  = gs.betHistory.filter(e => e.groupId === lastGroup);
-
-    for (const e of toRemove) {
-      gs.bets[e.sid][e.type] = Math.max(0, gs.bets[e.sid][e.type] - e.amt);
-      player.wallet   += e.amt;
-      player.totalBet  = Math.max(0, player.totalBet - e.amt);
-      if (gs.bets[e.sid].main === 0) {
-        gs.activeSeats = gs.activeSeats.filter(s => s !== e.sid);
-      }
+    for (const e of gs.betHistory.filter(e=>e.groupId===lastGroup)) {
+      gs.bets[e.sid][e.type] = Math.max(0, gs.bets[e.sid][e.type]-e.amt);
+      player.wallet += e.amt; player.totalBet = Math.max(0, player.totalBet-e.amt);
+      if (gs.bets[e.sid].main===0) gs.activeSeats = gs.activeSeats.filter(s=>s!==e.sid);
     }
-    gs.betHistory = gs.betHistory.filter(e => e.groupId !== lastGroup);
+    gs.betHistory = gs.betHistory.filter(e=>e.groupId!==lastGroup);
     broadcast(code);
   });
 
-  // ── Clear Bets
   socket.on('clearBets', () => {
     const code = socket.data.code;
     const room = rooms[code];
     if (!room) return;
     const { gs, players } = room;
-    if (gs.betsLocked) return;  // bets locked once Deal is clicked
+    if (gs.betsLocked) return;
     const player = players[socket.id];
     if (!player) return;
-
-    const mine = gs.betHistory.filter(e => e.socketId === socket.id);
-    for (const e of mine) {
-      gs.bets[e.sid][e.type] = Math.max(0, gs.bets[e.sid][e.type] - e.amt);
-      player.wallet   += e.amt;
-      player.totalBet  = Math.max(0, player.totalBet - e.amt);
+    for (const e of gs.betHistory.filter(e=>e.socketId===socket.id)) {
+      gs.bets[e.sid][e.type] = Math.max(0, gs.bets[e.sid][e.type]-e.amt);
+      player.wallet += e.amt; player.totalBet = Math.max(0, player.totalBet-e.amt);
     }
-    gs.betHistory = gs.betHistory.filter(e => e.socketId !== socket.id);
-    // Remove from activeSeats if no main bet left
+    gs.betHistory = gs.betHistory.filter(e=>e.socketId!==socket.id);
     for (const sid of [...gs.activeSeats]) {
-      if (gs.bets[sid].main === 0) gs.activeSeats = gs.activeSeats.filter(s => s !== sid);
+      if (gs.bets[sid].main===0) gs.activeSeats = gs.activeSeats.filter(s=>s!==sid);
     }
     broadcast(code);
   });
 
-  // ── Rebet
   socket.on('rebet', () => {
     const code = socket.data.code;
     const room = rooms[code];
     if (!room) return;
     const { gs, players } = room;
-    if (gs.betsLocked) return;  // bets locked once Deal is clicked
+    if (gs.betsLocked) return;
     const player = players[socket.id];
     if (!player) return;
-
-    const last = gs.lastRoundBets[socket.id] || [];
-    for (const e of last) {
-      const maxBet = e.type === 'main' ? 10000 : 2000;
-      const cur    = gs.bets[e.sid][e.type] || 0;
-      if (cur >= maxBet || player.wallet < e.amt) continue;
-      const allowed = Math.min(e.amt, maxBet - cur);
-      player.wallet   -= allowed;
-      player.totalBet += allowed;
+    for (const e of (gs.lastRoundBets[socket.id]||[])) {
+      const maxBet = e.type==='main'?10000:2000;
+      const cur = gs.bets[e.sid][e.type]||0;
+      if (cur>=maxBet||player.wallet<e.amt) continue;
+      const allowed = Math.min(e.amt, maxBet-cur);
+      player.wallet -= allowed; player.totalBet += allowed;
       gs.bets[e.sid][e.type] += allowed;
-      if (e.type === 'main' && !gs.activeSeats.includes(e.sid)) gs.activeSeats.push(e.sid);
-      gs.betHistory.push({ socketId: socket.id, sid: e.sid, type: e.type, amt: allowed, groupId: 'rebet_'+Date.now() });
+      if (e.type==='main'&&!gs.activeSeats.includes(e.sid)) gs.activeSeats.push(e.sid);
+      gs.betHistory.push({ socketId:socket.id, sid:e.sid, type:e.type, amt:allowed, groupId:'rebet_'+Date.now() });
     }
     broadcast(code);
-    if (gs.activeSeats.length > 0 && !room.betTimerTimeout) startBetTimer(code);
+    if (gs.activeSeats.length>0&&!room.betTimerTimeout) startBetTimer(code);
   });
 
-  // ── Double bets
   socket.on('doubleBets', () => {
     const code = socket.data.code;
     const room = rooms[code];
     if (!room) return;
     const { gs, players } = room;
-    if (gs.betsLocked) return;  // bets locked once Deal is clicked
+    if (gs.betsLocked) return;
     const player = players[socket.id];
     if (!player) return;
-
-    const mine = gs.betHistory.filter(e => e.socketId === socket.id);
-    for (const e of mine) {
-      const maxBet = e.type === 'main' ? 10000 : 2000;
-      const cur    = gs.bets[e.sid][e.type];
-      const add    = Math.min(e.amt, maxBet - cur);
-      if (player.wallet < add || add <= 0) continue;
-      player.wallet   -= add;
-      player.totalBet += add;
+    for (const e of gs.betHistory.filter(e=>e.socketId===socket.id)) {
+      const maxBet = e.type==='main'?10000:2000;
+      const cur = gs.bets[e.sid][e.type];
+      const add = Math.min(e.amt, maxBet-cur);
+      if (player.wallet<add||add<=0) continue;
+      player.wallet -= add; player.totalBet += add;
       gs.bets[e.sid][e.type] += add;
-      gs.betHistory.push({ socketId: socket.id, sid: e.sid, type: e.type, amt: add, groupId: '2x_'+Date.now() });
+      gs.betHistory.push({ socketId:socket.id, sid:e.sid, type:e.type, amt:add, groupId:'2x_'+Date.now() });
     }
     broadcast(code);
   });
 
-  // ── Deal
   socket.on('deal', () => {
     const code = socket.data.code;
     const room = rooms[code];
-    if (!room || room.gs.gameStatus !== 'betting') return;
+    if (!room||room.gs.gameStatus!=='betting') return;
     const { gs } = room;
-    if (gs.activeSeats.length === 0) return;
-
-    // Only players who have an active bet seat can vote to deal
-    const playersWithBets = new Set(
-      gs.activeSeats.map(sid => gs.seatOwners[sid]).filter(Boolean)
-    );
+    if (gs.activeSeats.length===0) return;
+    const playersWithBets = new Set(gs.activeSeats.map(sid=>gs.seatOwners[sid]).filter(Boolean));
     if (!playersWithBets.has(socket.id)) return;
-
-    // Lock bets the moment the first player clicks Deal
-    if (!gs.betsLocked) {
-      gs.betsLocked = true;
-      cancelBetTimer(code);
-      broadcast(code);
-    }
-
-    if (!gs.readyPlayers.includes(socket.id)) {
-      gs.readyPlayers.push(socket.id);
-    }
-
-    // Notify everyone how many have readied up
-    io.to(code).emit('dealVote', {
-      ready: gs.readyPlayers.length,
-      needed: playersWithBets.size,
-      readyIds: gs.readyPlayers,
-    });
-
-    // All players with bets have voted — start deal
-    if ([...playersWithBets].every(id => gs.readyPlayers.includes(id))) {
-      startDeal(code);
-    }
+    if (!gs.betsLocked) { gs.betsLocked=true; cancelBetTimer(code); broadcast(code); }
+    if (!gs.readyPlayers.includes(socket.id)) gs.readyPlayers.push(socket.id);
+    io.to(code).emit('dealVote', { ready:gs.readyPlayers.length, needed:playersWithBets.size, readyIds:gs.readyPlayers });
+    if ([...playersWithBets].every(id=>gs.readyPlayers.includes(id))) startDeal(code);
   });
 
-  // ── Player Action
   socket.on('action', ({ action, sid }) => {
     const code = socket.data.code;
     const room = rooms[code];
     if (!room) return;
     const { gs, players } = room;
-    if (gs.gameStatus !== 'playing') return;
-
+    if (gs.gameStatus!=='playing') return;
     const rtl = [...gs.activeSeats].map(Number).sort((a,b)=>b-a).map(String);
-    const currentSid = rtl[gs.currentSeatIndex];
-    if (currentSid !== sid) return;
-    if (gs.seatOwners[sid] !== socket.id) return;
-
+    if (rtl[gs.currentSeatIndex]!==sid) return;
+    if (gs.seatOwners[sid]!==socket.id) return;
     const player = players[socket.id];
 
-    if (action === 'hit') {
+    if (action==='hit') {
       dealTo(gs, sid);
       const hand = gs.splitActive[sid] ? gs.hands[sid]['hand'+(gs.splitHandIndex[sid]+1)] : gs.hands[sid];
-      const sc   = score(hand);
+      const sc = score(hand);
       broadcast(code);
-      if (sc > 21) { playerBust(code, sid); return; }
-      if (sc === 21) { advanceSeat(code, sid); return; }
-      // Stays on seat for more actions
-      io.to(code).emit('yourTurn', { sid, ownerId: gs.seatOwners[sid] });
-
-    } else if (action === 'stand') {
+      if (sc>21) { playerBust(code, sid); return; }
+      if (sc===21) { advanceSeat(code, sid); return; }
+      io.to(code).emit('yourTurn', { sid, ownerId:gs.seatOwners[sid], splitHandIndex:gs.splitHandIndex[sid] });
+    } else if (action==='stand') {
       advanceSeat(code, sid);
-
-    } else if (action === 'double') {
-      if (player && player.wallet >= gs.bets[sid].main) {
+    } else if (action==='double') {
+      if (player&&player.wallet>=gs.bets[sid].main) {
         const extra = gs.bets[sid].main;
-        player.wallet   -= extra;
-        player.totalBet += extra;
-        gs.bets[sid].main *= 2;
-        gs.doubled[sid] = true;
-        dealTo(gs, sid);
-        broadcast(code);
-        advanceSeat(code, sid);
+        player.wallet -= extra; player.totalBet += extra;
+        gs.bets[sid].main *= 2; gs.doubled[sid] = true;
+        dealTo(gs, sid); broadcast(code); advanceSeat(code, sid);
       }
-
-    } else if (action === 'split') {
+    } else if (action==='split') {
       const hand = gs.hands[sid];
-      if (!Array.isArray(hand) || hand.length !== 2) return;
-      if (!player || player.wallet < gs.bets[sid].main) return;
-      player.wallet   -= gs.bets[sid].main;
-      player.totalBet += gs.bets[sid].main;
-      const [c1, c2] = hand;
+      if (!Array.isArray(hand)||hand.length!==2) return;
+      if (!player||player.wallet<gs.bets[sid].main) return;
+      player.wallet -= gs.bets[sid].main; player.totalBet += gs.bets[sid].main;
+      const [c1,c2] = hand;
       const n1 = gs.deck.pop(), n2 = gs.deck.pop();
-      gs.hands[sid] = { hand1: [c1, n1], hand2: [c2, n2] };
-      gs.splitActive[sid]    = true;
+      gs.hands[sid] = { hand1:[c1,n1], hand2:[c2,n2] };
+      gs.splitActive[sid] = true;
       gs.splitHandIndex[sid] = 0;
       broadcast(code);
-      io.to(code).emit('yourTurn', { sid, ownerId: gs.seatOwners[sid] });
+      io.to(code).emit('yourTurn', { sid, ownerId:gs.seatOwners[sid], splitHandIndex:0 });
     }
   });
 
-  // ── Insurance response
   socket.on('insuranceResponse', ({ choices }) => {
-    // choices: { [sid]: bool }
     const code = socket.data.code;
     const room = rooms[code];
     if (!room) return;
     const { gs, players } = room;
+    if (!gs.insurancePhase) return;
     const player = players[socket.id];
-
     for (const [sid, insure] of Object.entries(choices)) {
-      if (gs.seatOwners[sid] !== socket.id) continue;
+      if (gs.seatOwners[sid]!==socket.id) continue;
       if (insure) {
-        const cost = Math.floor(gs.bets[sid].main / 2);
-        if (player && player.wallet >= cost) {
-          player.wallet   -= cost;
-          player.totalBet += cost;
-          gs.insurance[sid] = cost;
-        }
+        const cost = Math.floor(gs.bets[sid].main/2);
+        if (player&&player.wallet>=cost) { player.wallet -= cost; player.totalBet += cost; gs.insurance[sid] = cost; }
       }
     }
     gs.insuranceResponses[socket.id] = true;
-    // Check if all players responded
     const needResponse = new Set(Object.values(gs.seatOwners));
-    const responded    = new Set(Object.keys(gs.insuranceResponses));
-    const allDone = [...needResponse].every(id => responded.has(id));
-    if (allDone) {
-      gs.insurancePhase = false;
-      broadcast(code);
-      checkBJ(code);
-    } else {
-      broadcast(code);
-    }
+    const allDone = [...needResponse].every(id=>gs.insuranceResponses[id]);
+    if (allDone) { gs.insurancePhase=false; gs.insuranceDone=true; broadcast(code); checkBJ(code); }
+    else broadcast(code);
   });
 
-  // ── Disconnect
   socket.on('disconnect', () => {
     const code = socket.data.code;
-    if (!code || !rooms[code]) return;
+    if (!code||!rooms[code]) return;
     const room = rooms[code];
+    const wasHost = room.players[socket.id]?.isHost;
     delete room.players[socket.id];
-    // Free their seats
     for (const [sid, ownerId] of Object.entries(room.gs.seatOwners)) {
-      if (ownerId === socket.id) {
+      if (ownerId===socket.id) {
         delete room.gs.seatOwners[sid];
-        room.gs.activeSeats = room.gs.activeSeats.filter(s => s !== sid);
+        room.gs.activeSeats = room.gs.activeSeats.filter(s=>s!==sid);
         room.gs.bets[sid] = { main:0, pp:0, sp:0 };
       }
     }
-    if (Object.keys(room.players).length === 0) {
+    if (Object.keys(room.players).length===0) {
       if (room.betTimerTimeout) clearInterval(room.betTimerTimeout);
       delete rooms[code];
-      console.log(`Room ${code} deleted (empty)`);
     } else {
+      if (wasHost) {
+        const newHostId = reassignHost(room);
+        if (newHostId) io.to(newHostId).emit('becameHost');
+      }
       broadcast(code);
     }
   });
@@ -850,11 +755,10 @@ function advanceSeat(code, sid) {
   const room = rooms[code];
   if (!room) return;
   const { gs } = room;
-  if (gs.splitActive[sid] && gs.splitHandIndex[sid] === 0) {
+  if (gs.splitActive[sid] && gs.splitHandIndex[sid]===0) {
     gs.splitHandIndex[sid] = 1;
     broadcast(code);
-    const rtl = [...gs.activeSeats].map(Number).sort((a,b)=>b-a).map(String);
-    io.to(code).emit('yourTurn', { sid, ownerId: gs.seatOwners[sid] });
+    io.to(code).emit('yourTurn', { sid, ownerId:gs.seatOwners[sid], splitHandIndex:1 });
     return;
   }
   gs.stoodSeats.push(sid);
