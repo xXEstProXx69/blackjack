@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Kikikov BlackJack</title>
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700&family=Rajdhani:wght@400;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- ══════════════════════════════════════════
+     LOBBY SCREEN
+══════════════════════════════════════════ -->
+<div id="lobby-screen">
+  <div id="lobby-card">
+    <div id="lobby-logo">♠</div>
+    <h1 id="lobby-title">Kikikov BlackJack</h1>
+    <p id="lobby-sub">Multiplayer · Live Table</p>
+
+    <input id="lobby-name" type="text" placeholder="Your name…" maxlength="18" autocomplete="off" spellcheck="false">
+
+    <div id="lobby-btns">
+      <button id="btn-create-room" class="lobby-btn lobby-btn-primary">Create Room</button>
+      <div id="lobby-divider"><span>or</span></div>
+      <div id="lobby-join-row">
+        <input id="lobby-code-input" type="text" placeholder="Room code…" maxlength="4" autocomplete="off" spellcheck="false">
+        <button id="btn-join-room" class="lobby-btn lobby-btn-secondary">Join</button>
+      </div>
+    </div>
+    <div id="lobby-error" class="hidden"></div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════
+     WAITING ROOM (after create, before enough players)
+══════════════════════════════════════════ -->
+<div id="waiting-screen" class="hidden">
+  <div id="waiting-card">
+    <div id="waiting-logo">♠</div>
+    <p id="waiting-label">ROOM CODE</p>
+    <div id="waiting-code">----</div>
+    <p id="waiting-hint">Share this code with friends to join</p>
+    <div id="waiting-players"></div>
+    <button id="btn-start-game" class="lobby-btn lobby-btn-primary">Start Game</button>
+    <button id="btn-leave-room" class="lobby-btn lobby-btn-ghost">Leave</button>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════
+     GAME SCREEN
+══════════════════════════════════════════ -->
+<div id="game-container" class="hidden">
+  <div id="top-right-btns">
+    <button id="btn-history" title="History">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="18" height="18">
+        <circle cx="12" cy="12" r="9"/>
+        <polyline points="12 7 12 12 15 15"/>
+        <path d="M7.5 3.5 A9 9 0 0 0 3 9" stroke-width="2"/>
+        <polyline points="3 5.5 3 9 6.5 9" stroke-width="1.8"/>
+      </svg>
+    </button>
+    <button id="btn-gear" title="Settings">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="18" height="18">
+        <circle cx="12" cy="12" r="3"/>
+        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+      </svg>
+    </button>
+  </div>
+
+  <!-- Settings Modal -->
+  <div id="settings-modal" class="hidden">
+    <div id="settings-card">
+      <h2 id="settings-title">⚙ Settings</h2>
+      <div class="setting-row">
+        <label>Display Name</label>
+        <div class="setting-control setting-name-row">
+          <input type="text" id="settings-name-input" maxlength="18" autocomplete="off" spellcheck="false" placeholder="Your name…">
+          <button id="btn-save-name" class="settings-save-btn">Save</button>
+        </div>
+      </div>
+      <div class="setting-name-msg" id="settings-name-msg"></div>
+      <div class="setting-row">
+        <label>SFX Volume</label>
+        <div class="setting-control">
+          <input type="range" id="sfx-volume" min="0" max="1" step="0.05" value="0.4">
+          <span id="sfx-volume-val">40%</span>
+        </div>
+      </div>
+      <div class="setting-row" id="autoplay-row">
+        <label>Auto-play</label>
+        <div class="setting-control">
+          <div class="autoplay-toggle">
+            <div class="autoplay-toggle-btn" id="autoplay-toggle">
+              <span class="autoplay-icon"></span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div id="autoplay-threshold-wrap" class="autoplay-threshold" style="display:none">
+        <span>Stand if score &lt;</span>
+        <input type="number" id="autoplay-threshold" value="17" min="12" max="21">
+        <span>(else hit)</span>
+      </div>
+      <button id="settings-close">Done</button>
+    </div>
+  </div>
+
+  <!-- Room code badge -->
+  <div id="room-badge">Room <span id="room-badge-code"></span></div>
+
+  <!-- Players online panel -->
+  <div id="players-panel">
+    <div id="players-panel-title">TABLE</div>
+    <div id="players-list"></div>
+  </div>
+
+  <!-- Top-left table info panel -->
+  <div id="table-info-panel">
+    <div id="table-info-bar">
+      <span id="table-info-x">&#10005;</span>
+      <span id="table-info-title">Kikikov BlackJack &nbsp;<span id="table-info-limits">&#8364;1 &#8211; &#8364;10,000</span></span>
+      <span id="table-info-pin">&#128204;</span>
+    </div>
+    <div id="table-payout-menu">
+      <div class="payout-header-row"><span class="payout-col-head">BET</span><span class="payout-col-head right">PAYOUT</span></div>
+      <div class="payout-group-header">BLACKJACK <span class="payout-range">&#8364;10 &#8211; &#8364;100,000</span></div>
+      <div class="payout-row"><span>Blackjack</span><span class="payout-val">3:2</span></div>
+      <div class="payout-row"><span>Winning Hand</span><span class="payout-val">1:1</span></div>
+      <div class="payout-row"><span>Insurance</span><span class="payout-val">2:1</span></div>
+      <div class="payout-group-header">PERFECT PAIRS <span class="payout-range">&#8364;1 &#8211; &#8364;500</span></div>
+      <div class="payout-row"><span>Perfect Pair <span class="suit-red">A&#9829; A&#9829;</span></span><span class="payout-val">25:1</span></div>
+      <div class="payout-row"><span>Coloured Pair <span class="suit-mix">K&#9830; K&#9829;</span></span><span class="payout-val">12:1</span></div>
+      <div class="payout-row"><span>Mixed Pair <span class="suit-mix">Q&#9824; Q&#9829;</span></span><span class="payout-val">6:1</span></div>
+      <div class="payout-group-header">21+3 <span class="payout-range">&#8364;1 &#8211; &#8364;500</span></div>
+      <div class="payout-row"><span>Suited Trips <span class="suit-red">A&#9829; A&#9829; A&#9829;</span></span><span class="payout-val">100:1</span></div>
+      <div class="payout-row"><span>Straight Flush <span class="suit-red">A&#9829; 2&#9829; 3&#9829;</span></span><span class="payout-val">40:1</span></div>
+      <div class="payout-row"><span>Three of a Kind <span class="suit-mix">K&#9824; K&#9829; K&#9827;</span></span><span class="payout-val">30:1</span></div>
+      <div class="payout-row"><span>Straight <span class="suit-mix">K&#9824; Q&#9829; J&#9830;</span></span><span class="payout-val">10:1</span></div>
+      <div class="payout-row"><span>Flush <span class="suit-red">J&#9830; 2&#9830; 3&#9830;</span></span><span class="payout-val">5:1</span></div>
+    </div>
+  </div>
+
+  <div id="table">
+    <div id="card-shoe">
+      <div id="card-shoe-body"></div>
+      <div id="card-shoe-slot"></div>
+      <div id="card-shoe-label">6 Deck</div>
+    </div>
+    <div id="table-text">
+      <div id="table-title">BLACK JACK</div>
+      <div id="table-pays">Pays <span class="pays-num">3</span> to <span class="pays-num">2</span></div>
+      <div id="table-rules">Dealer must draw to 16 and stand on all 17s</div>
+    </div>
+    <div id="dealer-area">
+      <div class="area-label">Dealer</div>
+      <div id="dealer-hand"></div>
+      <div class="score-display hidden" id="dealer-score">0</div>
+    </div>
+    <div id="seats-container">
+      <!-- SEAT 1 -->
+      <div class="seat" id="seat-1" data-seat="1">
+        <div class="player-hand" id="hand-1"></div>
+        <div class="score-display hidden" id="score-1">0</div>
+        <div class="betting-circles">
+          <div class="bet-circle side-bet pp" data-seat="1" data-type="pp"><span class="bet-label">PP</span><span class="bet-amount"></span></div>
+          <div class="bet-circle main-bet" data-seat="1" data-type="main">
+            <div class="claim-overlay"><svg class="person-svg" viewBox="0 0 40 44" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="20" cy="13" r="9"/><path d="M4 42c0-8.837 7.163-16 16-16s16 7.163 16 16" stroke-linecap="round"/></svg></div>
+            <span class="bet-amount"></span>
+          </div>
+          <div class="bet-circle side-bet sp" data-seat="1" data-type="sp"><span class="bet-label">21+3</span><span class="bet-amount"></span></div>
+        </div>
+        <div class="seat-name-tag hidden"></div>
+        <div class="seat-chip-deco"><svg viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg"><circle cx="24" cy="24" r="21" fill="rgba(0,0,0,0.22)" stroke="rgba(255,255,255,0.22)" stroke-width="2"/><circle cx="24" cy="24" r="15" fill="none" stroke="rgba(255,255,255,0.13)" stroke-width="1.5" stroke-dasharray="4 3"/><circle cx="24" cy="24" r="8" fill="rgba(255,255,255,0.05)" stroke="rgba(255,255,255,0.2)" stroke-width="1.5"/></svg></div>
+        <button class="leave-seat-btn hidden" title="Leave seat">✕</button>
+      </div>
+      <!-- SEAT 2 -->
+      <div class="seat" id="seat-2" data-seat="2">
+        <div class="player-hand" id="hand-2"></div>
+        <div class="score-display hidden" id="score-2">0</div>
+        <div class="betting-circles">
+          <div class="bet-circle side-bet pp" data-seat="2" data-type="pp"><span class="bet-label">PP</span><span class="bet-amount"></span></div>
+          <div class="bet-circle main-bet" data-seat="2" data-type="main">
+            <div class="claim-overlay"><svg class="person-svg" viewBox="0 0 40 44" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="20" cy="13" r="9"/><path d="M4 42c0-8.837 7.163-16 16-16s16 7.163 16 16" stroke-linecap="round"/></svg></div>
+            <span class="bet-amount"></span>
+          </div>
+          <div class="bet-circle side-bet sp" data-seat="2" data-type="sp"><span class="bet-label">21+3</span><span class="bet-amount"></span></div>
+        </div>
+        <div class="seat-name-tag hidden"></div>
+        <div class="seat-chip-deco"><svg viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg"><circle cx="24" cy="24" r="21" fill="rgba(0,0,0,0.22)" stroke="rgba(255,255,255,0.22)" stroke-width="2"/><circle cx="24" cy="24" r="15" fill="none" stroke="rgba(255,255,255,0.13)" stroke-width="1.5" stroke-dasharray="4 3"/><circle cx="24" cy="24" r="8" fill="rgba(255,255,255,0.05)" stroke="rgba(255,255,255,0.2)" stroke-width="1.5"/></svg></div>
+        <button class="leave-seat-btn hidden" title="Leave seat">✕</button>
+      </div>
+      <!-- SEAT 3 -->
+      <div class="seat" id="seat-3" data-seat="3">
+        <div class="player-hand" id="hand-3"></div>
+        <div class="score-display hidden" id="score-3">0</div>
+        <div class="betting-circles">
+          <div class="bet-circle side-bet pp" data-seat="3" data-type="pp"><span class="bet-label">PP</span><span class="bet-amount"></span></div>
+          <div class="bet-circle main-bet" data-seat="3" data-type="main">
+            <div class="claim-overlay"><svg class="person-svg" viewBox="0 0 40 44" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="20" cy="13" r="9"/><path d="M4 42c0-8.837 7.163-16 16-16s16 7.163 16 16" stroke-linecap="round"/></svg></div>
+            <span class="bet-amount"></span>
+          </div>
+          <div class="bet-circle side-bet sp" data-seat="3" data-type="sp"><span class="bet-label">21+3</span><span class="bet-amount"></span></div>
+        </div>
+        <div class="seat-name-tag hidden"></div>
+        <div class="seat-chip-deco"><svg viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg"><circle cx="24" cy="24" r="21" fill="rgba(0,0,0,0.22)" stroke="rgba(255,255,255,0.22)" stroke-width="2"/><circle cx="24" cy="24" r="15" fill="none" stroke="rgba(255,255,255,0.13)" stroke-width="1.5" stroke-dasharray="4 3"/><circle cx="24" cy="24" r="8" fill="rgba(255,255,255,0.05)" stroke="rgba(255,255,255,0.2)" stroke-width="1.5"/></svg></div>
+        <button class="leave-seat-btn hidden" title="Leave seat">✕</button>
+      </div>
+      <!-- SEAT 4 -->
+      <div class="seat" id="seat-4" data-seat="4">
+        <div class="player-hand" id="hand-4"></div>
+        <div class="score-display hidden" id="score-4">0</div>
+        <div class="betting-circles">
+          <div class="bet-circle side-bet pp" data-seat="4" data-type="pp"><span class="bet-label">PP</span><span class="bet-amount"></span></div>
+          <div class="bet-circle main-bet" data-seat="4" data-type="main">
+            <div class="claim-overlay"><svg class="person-svg" viewBox="0 0 40 44" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="20" cy="13" r="9"/><path d="M4 42c0-8.837 7.163-16 16-16s16 7.163 16 16" stroke-linecap="round"/></svg></div>
+            <span class="bet-amount"></span>
+          </div>
+          <div class="bet-circle side-bet sp" data-seat="4" data-type="sp"><span class="bet-label">21+3</span><span class="bet-amount"></span></div>
+        </div>
+        <div class="seat-name-tag hidden"></div>
+        <div class="seat-chip-deco"><svg viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg"><circle cx="24" cy="24" r="21" fill="rgba(0,0,0,0.22)" stroke="rgba(255,255,255,0.22)" stroke-width="2"/><circle cx="24" cy="24" r="15" fill="none" stroke="rgba(255,255,255,0.13)" stroke-width="1.5" stroke-dasharray="4 3"/><circle cx="24" cy="24" r="8" fill="rgba(255,255,255,0.05)" stroke="rgba(255,255,255,0.2)" stroke-width="1.5"/></svg></div>
+        <button class="leave-seat-btn hidden" title="Leave seat">✕</button>
+      </div>
+      <!-- SEAT 5 -->
+      <div class="seat" id="seat-5" data-seat="5">
+        <div class="player-hand" id="hand-5"></div>
+        <div class="score-display hidden" id="score-5">0</div>
+        <div class="betting-circles">
+          <div class="bet-circle side-bet pp" data-seat="5" data-type="pp"><span class="bet-label">PP</span><span class="bet-amount"></span></div>
+          <div class="bet-circle main-bet" data-seat="5" data-type="main">
+            <div class="claim-overlay"><svg class="person-svg" viewBox="0 0 40 44" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="20" cy="13" r="9"/><path d="M4 42c0-8.837 7.163-16 16-16s16 7.163 16 16" stroke-linecap="round"/></svg></div>
+            <span class="bet-amount"></span>
+          </div>
+          <div class="bet-circle side-bet sp" data-seat="5" data-type="sp"><span class="bet-label">21+3</span><span class="bet-amount"></span></div>
+        </div>
+        <div class="seat-name-tag hidden"></div>
+        <div class="seat-chip-deco"><svg viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg"><circle cx="24" cy="24" r="21" fill="rgba(0,0,0,0.22)" stroke="rgba(255,255,255,0.22)" stroke-width="2"/><circle cx="24" cy="24" r="15" fill="none" stroke="rgba(255,255,255,0.13)" stroke-width="1.5" stroke-dasharray="4 3"/><circle cx="24" cy="24" r="8" fill="rgba(255,255,255,0.05)" stroke="rgba(255,255,255,0.2)" stroke-width="1.5"/></svg></div>
+        <button class="leave-seat-btn hidden" title="Leave seat">✕</button>
+      </div>
+    </div>
+    <div id="status-message">Waiting for players…</div>
+  </div>
+
+  <div id="chip-tray" class="hidden">
+    <div id="chips">
+      <div class="chip chip-1"   data-value="1">€1</div>
+      <div class="chip chip-2"   data-value="2">€2</div>
+      <div class="chip chip-5"   data-value="5">€5</div>
+      <div class="chip chip-10"  data-value="10">€10</div>
+      <div class="chip chip-25"  data-value="25">€25</div>
+      <div class="chip chip-50"  data-value="50">€50</div>
+      <div class="chip chip-100" data-value="100">€100</div>
+      <div class="chip chip-200" data-value="200">€200</div>
+      <div class="chip chip-500" data-value="500">€500</div>
+      <div class="chip chip-1k"  data-value="1000">€1k</div>
+      <div class="chip chip-2k"  data-value="2000">€2k</div>
+      <div class="chip chip-5k"  data-value="5000">€5k</div>
+      <div class="chip chip-10k" data-value="10000">€10k</div>
+    </div>
+  </div>
+  <!-- Floating action buttons separate from chip tray -->
+  <div id="chip-action-floats" class="hidden">
+    <button id="btn-undo"  class="chip-action-btn undo-btn">&#x21A9; Undo</button>
+    <button id="btn-rebet" class="chip-action-btn rebet-btn hidden">&#x21BA; Rebet</button>
+    <button id="btn-2x"    class="chip-action-btn x2-btn   hidden">2&times;</button>
+    <button id="btn-clear" class="chip-action-btn clear-btn hidden">&#x2715; Clear</button>
+  </div>
+
+  <div id="bet-timer-wrap" class="hidden">
+    <div id="place-your-bets">PLACE YOUR BETS</div>
+    <div id="bet-timer">
+      <div id="bet-timer-bar"></div>
+      <span id="bet-timer-text">15</span>
+    </div>
+  </div>
+
+  <div id="deal-btn-wrap" class="hidden">
+    <button id="btn-deal">DEAL</button>
+  </div>
+
+  <div id="play-buttons" class="hidden">
+    <button id="btn-double" class="action-cubic action-double">
+      <span class="cubic-icon">2×</span>
+      <span class="cubic-label">DOUBLE</span>
+    </button>
+    <button id="btn-hit" class="action-cubic action-hit">
+      <span class="cubic-icon">+</span>
+      <span class="cubic-label">HIT</span>
+    </button>
+    <button id="btn-stand" class="action-cubic action-stand">
+      <span class="cubic-icon">−</span>
+      <span class="cubic-label">STAND</span>
+    </button>
+    <button id="btn-split" class="action-cubic action-split hidden">
+      <span class="cubic-icon">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+          <rect x="2" y="4" width="8" height="12" rx="2"/>
+          <rect x="14" y="4" width="8" height="12" rx="2"/>
+          <path d="M10 10 H14"/>
+          <path d="M8 16 L4 20 M16 16 L20 20"/>
+        </svg>
+      </span>
+      <span class="cubic-label">SPLIT</span>
+    </button>
+  </div>
+
+  <div id="insurance-modal" class="hidden">
+    <div id="insurance-title">🃏 Dealer Shows an Ace</div>
+    <div id="insurance-subtitle">Insurance pays 2:1 — costs half your main bet</div>
+    <div id="insurance-seats"></div>
+    <button id="insurance-confirm">Confirm</button>
+  </div>
+
+  <div id="bottom-hud">
+    <div class="hud-pill" id="hud-balance-pill">
+      <span class="hud-pill-label">BALANCE</span>
+      <span class="hud-pill-value" id="wallet-amount">€5,000</span>
+    </div>
+    <div class="hud-chip-icon">🟢🔴</div>
+    <div class="hud-pill" id="hud-bet-pill">
+      <span class="hud-pill-label">TOTAL BET</span>
+      <span class="hud-pill-value" id="hud-bet-amount">€0</span>
+    </div>
+  </div>
+</div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script src="client.js"></script>
+</body>
+</html>
