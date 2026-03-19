@@ -6,7 +6,7 @@ let mySocketId=null,myName='',myWallet=5000,roomCode=null,selectedChip=100;
 let activeTurnSid=null,activeTurnHandIdx=0,prevGs=null,winOverlayShown=false;
 let actionPending=false,sfxVolume=0.4,currentRoundLog=null;
 let countdownRafId=null,countdownStart=0,countdownTotal=15000;
-let autoplayOn=false,autoplayThreshold=17,bjSoundedSeats=new Set();
+let autoplayOn=false,autoplayThreshold=17,bjSoundedSeats=new Set(),shownSideBetPills=new Set();
 const _prevScores={};
 const CHIP_COLORS={1:'#e8e8e8,#b0b0b0',2:'#d0d0d0,#888',5:'#e03030,#900',10:'#1a7ad4,#0a4a9a',25:'#2da84e,#155a28',50:'#c07020,#804010',100:'#222,#111',200:'#b050f0,#6000b0',500:'#8030a0,#400060',1000:'#e0b000,#a07000',2000:'#e07030,#c03000',5000:'#10b0b0,#006060',10000:'#f050a0,#900040'};
 const AudioCtx=window.AudioContext||window.webkitAudioContext;let actx=null;
@@ -30,19 +30,22 @@ function suitIsRed(s){return s==='H'||s==='D';}
 function loadName(){try{return JSON.parse(localStorage.getItem('kk_name')||'null')||'';}catch(e){return'';}}
 function saveName(n){try{localStorage.setItem('kk_name',JSON.stringify(n));}catch(e){}}
 function loadHistory(){try{return JSON.parse(localStorage.getItem('kk_history')||'[]');}catch(e){return[];}}
+function loadToken(){try{let t=localStorage.getItem('kk_token');if(!t){t=Math.random().toString(36).slice(2)+Math.random().toString(36).slice(2);localStorage.setItem('kk_token',t);}return t;}catch(e){return'anon_'+Date.now();}}
+const myToken=loadToken();
 function saveHistory(h){try{localStorage.setItem('kk_history',JSON.stringify(h));}catch(e){}}
 function pushRound(e){const h=loadHistory();h.unshift(e);if(h.length>500)h.length=500;saveHistory(h);}
 (function(){const s=loadName();if(s){const i=$('lobby-name');if(i)i.value=s;}})();
 
 // ── Lobby ──────────────────────────────────────────────────────
-$('btn-create-room').addEventListener('click',()=>{const name=$('lobby-name').value.trim();if(!name){showLobbyError('Enter your name first');return;}myName=name;saveName(name);socket.emit('createRoom',{name,wallet:5000});});
-$('btn-join-room').addEventListener('click',()=>{const name=$('lobby-name').value.trim();const code=$('lobby-code-input').value.trim().toUpperCase();if(!name){showLobbyError('Enter your name first');return;}if(code.length!==4){showLobbyError('Enter a 4-digit room code');return;}myName=name;saveName(name);socket.emit('joinRoom',{code,name,wallet:5000});});
+$('btn-create-room').addEventListener('click',()=>{const name=$('lobby-name').value.trim();if(!name){showLobbyError('Enter your name first');return;}myName=name;saveName(name);socket.emit('createRoom',{name,wallet:5000,token:myToken});});
+$('btn-join-room').addEventListener('click',()=>{const name=$('lobby-name').value.trim();const code=$('lobby-code-input').value.trim().toUpperCase();if(!name){showLobbyError('Enter your name first');return;}if(code.length!==4){showLobbyError('Enter a 4-digit room code');return;}myName=name;saveName(name);socket.emit('joinRoom',{code,name,wallet:5000,token:myToken});});
 $('lobby-code-input').addEventListener('keydown',e=>{if(e.key==='Enter')$('btn-join-room').click();});
 $('lobby-name').addEventListener('keydown',e=>{if(e.key==='Enter')$('btn-create-room').click();});
 $('btn-start-game').addEventListener('click',()=>{sfxClick();socket.emit('startGame');});
 $('btn-leave-room').addEventListener('click',()=>showLeaveConfirm());
 function showLobbyError(msg){const el=$('lobby-error');el.textContent=msg;el.classList.remove('hidden');setTimeout(()=>el.classList.add('hidden'),3000);}
-function showLeaveConfirm(){if($('leave-confirm-modal'))return;const m=document.createElement('div');m.id='leave-confirm-modal';m.innerHTML='<div class="leave-confirm-card"><div class="leave-confirm-title">Leave Room?</div><div class="leave-confirm-sub">You\'ll lose your seat and bets.</div><div class="leave-confirm-btns"><button id="leave-yes" class="leave-btn-yes">Leave</button><button id="leave-no" class="leave-btn-no">Stay</button></div></div>';document.body.appendChild(m);$('leave-yes').addEventListener('click',()=>{socket.disconnect();location.reload();});$('leave-no').addEventListener('click',()=>m.remove());}
+function showLeaveConfirm(){showConfirmModal('Leave Room?','You\'ll lose your seat and any bets.','Leave','#ef5350',()=>{socket.disconnect();location.reload();});}
+function showConfirmModal(title,sub,confirmLabel,confirmColor,onConfirm){if($('confirm-modal'))return;const m=document.createElement('div');m.id='confirm-modal';m.innerHTML=`<div class="confirm-card"><div class="confirm-title">${title}</div><div class="confirm-sub">${sub}</div><div class="confirm-btns"><button class="confirm-btn-yes" style="background:${confirmColor}">${confirmLabel}</button><button class="confirm-btn-no">Cancel</button></div></div>`;document.body.appendChild(m);m.querySelector('.confirm-btn-yes').addEventListener('click',()=>{m.remove();onConfirm();});m.querySelector('.confirm-btn-no').addEventListener('click',()=>m.remove());}
 function launchGame(){hide('waiting-screen');hide('lobby-screen');show('game-container');const ct=$('chip-tray');if(ct){ct.classList.remove('hidden');ct.classList.remove('tray-hidden');}}
 
 // ── Socket core ────────────────────────────────────────────────
@@ -50,11 +53,13 @@ socket.on('roomJoined',({code,socketId,isHost})=>{mySocketId=socketId;roomCode=c
 socket.on('roomError',msg=>showLobbyError(msg));
 socket.on('gameLaunched',()=>launchGame());
 socket.on('autoLaunch',()=>launchGame());
+socket.on('banned',()=>{const m=document.createElement('div');m.className='kick-modal';m.innerHTML='<div class="kick-card"><div class="kick-title" style="color:#ff9800">🚫 You are banned</div><div style="color:rgba(255,255,255,0.5);font-size:.85rem;margin-bottom:20px;">You were banned from this room by the host.</div><button onclick="location.reload()" class="kick-btn">Back to Lobby</button></div>';document.body.appendChild(m);});
 socket.on('kicked',()=>{const m=document.createElement('div');m.className='kick-modal';m.innerHTML='<div class="kick-card"><div class="kick-title">You were kicked</div><button onclick="location.reload()" class="kick-btn">Back to Lobby</button></div>';document.body.appendChild(m);});
 socket.on('hostChanged',({hostId})=>{updateWaitingHostUI(hostId===mySocketId);if(hostId===mySocketId){const t=document.createElement('div');t.className='host-toast';t.textContent='\ud83d\udc51 You are now the host';document.body.appendChild(t);setTimeout(()=>t.remove(),3000);}});
 function updateWaitingHostUI(isHost){const b=$('btn-start-game');if(b)b.style.display=isHost?'':'none';}
 socket.on('insuranceOfferSeat',({sid,cost})=>showInsuranceForSeat(sid,cost));
-socket.on('stateUpdate',({gs,players,hostId})=>{const wl=$('waiting-players');if(wl)wl.innerHTML=Object.entries(players).map(([id,p])=>`<div class="waiting-player">${id===hostId?'<span class="lobby-crown">\ud83d\udc51</span>':''}${p.name}</div>`).join('');const sb=$('btn-start-game');if(sb)sb.style.display=(mySocketId===hostId)?'':'none';if(!gs.insurancePhase){document.querySelectorAll('.seat.insurance-highlight').forEach(e=>e.classList.remove('insurance-highlight'));$('insurance-modal')?.classList.add('hidden');}trackRound(gs,players);renderState(gs,players,hostId);prevGs=JSON.parse(JSON.stringify(gs));});
+socket.on('stateUpdate',({gs,players,hostId})=>{const wl=$('waiting-players');if(wl)wl.innerHTML=Object.entries(players).map(([id,p])=>`<div class="waiting-player">${id===hostId?'<span class="lobby-crown">\ud83d\udc51</span>':''}${p.name}</div>`).join('');const sb=$('btn-start-game');if(sb)sb.style.display=(mySocketId===hostId)?'':'none';// Always sync room badge
+if(roomCode){const rb=$('room-badge-code');if(rb)rb.textContent=roomCode;}if(!gs.insurancePhase){document.querySelectorAll('.seat.insurance-highlight').forEach(e=>e.classList.remove('insurance-highlight'));$('insurance-modal')?.classList.add('hidden');}trackRound(gs,players);renderState(gs,players,hostId);prevGs=JSON.parse(JSON.stringify(gs));});
 socket.on('timerTick',secs=>{
   const gs=prevGs;
   // Cancel timer display if no chips placed anywhere
@@ -82,7 +87,7 @@ socket.on('yourTurn',({sid,handIdx,ownerId})=>{
   }
 });
 socket.on('dealVote',({ready,needed,readyIds})=>{const b=$('btn-deal');if(!b)return;if(readyIds.includes(mySocketId)){b.textContent=`Waiting\u2026 (${ready}/${needed})`;b.disabled=true;b.style.opacity='0.6';}else{b.textContent=`Deal (${ready}/${needed} ready)`;b.disabled=false;b.style.opacity='1';}});
-socket.on('stateUpdate',({gs})=>{if(gs.gameStatus==='betting'){winOverlayShown=false;activeTurnSid=null;actionPending=false;bjSoundedSeats.clear();stopCountdown();hide('play-buttons');const db=$('btn-deal');if(db){db.disabled=false;db.style.opacity='1';db.textContent='DEAL';}document.querySelectorAll('.card,.card-back').forEach(c=>c.classList.add('fly-out'));document.querySelectorAll('.circle-win-label').forEach(e=>e.remove());Object.keys(_prevScores).forEach(k=>delete _prevScores[k]);}});
+socket.on('stateUpdate',({gs})=>{if(gs.gameStatus==='betting'){winOverlayShown=false;activeTurnSid=null;actionPending=false;bjSoundedSeats.clear();shownSideBetPills.clear();stopCountdown();hide('play-buttons');const db=$('btn-deal');if(db){db.disabled=false;db.style.opacity='1';db.textContent='DEAL';}document.querySelectorAll('.card,.card-back').forEach(c=>c.classList.add('fly-out'));stopDealCountdown();document.querySelectorAll('.circle-win-label,.win-chip-stack').forEach(e=>e.remove());Object.keys(_prevScores).forEach(k=>delete _prevScores[k]);}});
 
 // ── Smooth countdown rectangle ─────────────────────────────────
 function startCountdown(durationMs,onTimeout){
@@ -100,29 +105,31 @@ function startCountdown(durationMs,onTimeout){
   countdownRafId=requestAnimationFrame(tick);
 }
 function buildCountdownSVG(){
-  const hitBtn=$('btn-hit'),standBtn=$('btn-stand');
-  if(!hitBtn||!standBtn) return;
-  const hr=hitBtn.getBoundingClientRect(), sr=standBtn.getBoundingClientRect();
+  // Measure bounding box of ALL play buttons (hit, stand, double, split)
+  const allBtns=['btn-hit','btn-stand','btn-double','btn-split']
+    .map(id=>$(id)).filter(b=>b&&!b.classList.contains('hidden')&&!b.classList.contains('betting-hidden'));
+  if(!allBtns.length) return;
+  const rects=allBtns.map(b=>b.getBoundingClientRect());
   const pad=16;
-  const x=Math.min(hr.left,sr.left)-pad;
-  const y=Math.min(hr.top,sr.top)-pad;
-  const w=Math.max(hr.right,sr.right)+pad-x;
-  const h=Math.max(hr.bottom,sr.bottom)+pad-y;
+  const x=Math.min(...rects.map(r=>r.left))-pad;
+  const y=Math.min(...rects.map(r=>r.top))-pad;
+  const w=Math.max(...rects.map(r=>r.right))+pad-x;
+  const h=Math.max(...rects.map(r=>r.bottom))+pad-y;
   const rx=14;
-  // Build clockwise path starting from top-center
-  // Goes: top-center → top-right corner → right → bottom-right → bottom → bottom-left → left → top-left → back to top-center
+  // CCW path starting from top-center → drains clockwise as dashoffset grows
+  // Path goes: top-center → top-LEFT corner → left → bottom-left → bottom → bottom-right → right → top-right → top-center
   const mx=w/2;
   const pathD=
     `M ${mx} 0 ` +                               // top center
-    `L ${w-rx} 0 ` +                              // top right straight
-    `Q ${w} 0 ${w} ${rx} ` +                      // top right corner
-    `L ${w} ${h-rx} ` +                           // right side
-    `Q ${w} ${h} ${w-rx} ${h} ` +                 // bottom right corner
-    `L ${rx} ${h} ` +                             // bottom
-    `Q 0 ${h} 0 ${h-rx} ` +                       // bottom left corner
-    `L 0 ${rx} ` +                                // left side
-    `Q 0 0 ${rx} 0 ` +                            // top left corner
-    `L ${mx} 0`;                                  // back to top center
+    `L ${rx} 0 ` +                               // top left straight
+    `Q 0 0 0 ${rx} ` +                           // top left corner
+    `L 0 ${h-rx} ` +                             // left side
+    `Q 0 ${h} ${rx} ${h} ` +                     // bottom left corner
+    `L ${w-rx} ${h} ` +                          // bottom
+    `Q ${w} ${h} ${w} ${h-rx} ` +                // bottom right corner
+    `L ${w} ${rx} ` +                            // right side
+    `Q ${w} 0 ${w-rx} 0 ` +                      // top right corner
+    `L ${mx} 0`;                                 // back to top center
   // Approximate perimeter
   const perim=2*(w-2*rx)+2*(h-2*rx)+2*Math.PI*rx;
   const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');
@@ -166,6 +173,45 @@ function stopCountdown(){
   if(countdownRafId){cancelAnimationFrame(countdownRafId);countdownRafId=null;}
   const svg=document.getElementById('countdown-ring-svg');
   if(svg){svg.style.transition='opacity 0.3s';svg.style.opacity='0';setTimeout(()=>svg.remove(),350);}
+}
+// Countdown around deal button
+let dealCountdownRaf=null;
+function startDealCountdown(){
+  if(dealCountdownRaf){cancelAnimationFrame(dealCountdownRaf);dealCountdownRaf=null;}
+  document.getElementById('deal-countdown-svg')?.remove();
+  const dealBtn=$('btn-deal');if(!dealBtn)return;
+  const rect=dealBtn.getBoundingClientRect();
+  const pad=10;
+  const x=rect.left-pad, y=rect.top-pad;
+  const w=rect.width+pad*2, h=rect.height+pad*2;
+  const rx=30;
+  const mx=w/2;
+  const pathD=`M ${mx} 0 L ${w-rx} 0 Q ${w} 0 ${w} ${rx} L ${w} ${h-rx} Q ${w} ${h} ${w-rx} ${h} L ${rx} ${h} Q 0 ${h} 0 ${h-rx} L 0 ${rx} Q 0 0 ${rx} 0 Z`;
+  const perim=2*(w-2*rx)+2*(h-2*rx)+2*Math.PI*rx;
+  const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');
+  svg.id='deal-countdown-svg';
+  svg.style.cssText=`position:fixed;left:${x}px;top:${y}px;width:${w}px;height:${h}px;pointer-events:none;z-index:199;overflow:visible;`;
+  const track=document.createElementNS('http://www.w3.org/2000/svg','path');
+  track.setAttribute('d',pathD);track.setAttribute('fill','none');
+  track.setAttribute('stroke','rgba(0,0,0,0.2)');track.setAttribute('stroke-width','3');
+  const line=document.createElementNS('http://www.w3.org/2000/svg','path');
+  line.id='deal-cd-path';line.setAttribute('d',pathD);line.setAttribute('fill','none');
+  line.setAttribute('stroke','#000');line.setAttribute('stroke-width','3');
+  line.setAttribute('stroke-linecap','round');line.setAttribute('stroke-linejoin','round');
+  line.setAttribute('stroke-dasharray',String(perim));line.setAttribute('stroke-dashoffset','0');
+  svg.appendChild(track);svg.appendChild(line);document.body.appendChild(svg);
+  const start=performance.now(), dur=15000;
+  function tick(now){
+    const p=Math.min((now-start)/dur,1);
+    line.setAttribute('stroke-dashoffset',String(perim*p));
+    if(p<1){dealCountdownRaf=requestAnimationFrame(tick);}
+    else{cancelAnimationFrame(dealCountdownRaf);dealCountdownRaf=null;svg.remove();}
+  }
+  dealCountdownRaf=requestAnimationFrame(tick);
+}
+function stopDealCountdown(){
+  if(dealCountdownRaf){cancelAnimationFrame(dealCountdownRaf);dealCountdownRaf=null;}
+  document.getElementById('deal-countdown-svg')?.remove();
 }
 function positionCountdownBorder(){buildCountdownSVG();}
 function autoPlayAction(sid,handIdx){
@@ -231,14 +277,12 @@ function renderState(gs,players,hostId){
   const ct=$('chip-tray');if(ct){ct.classList.remove('hidden');if(isBetting)ct.classList.remove('tray-hidden');else ct.classList.add('tray-hidden');}
   const ca=$('chip-action-floats');if(ca){if(isBetting)ca.classList.remove('hidden');else ca.classList.add('hidden');}
   if(bLocked){hide('btn-undo');hide('btn-rebet');hide('btn-2x');}
-  else{if(isBetting)show('btn-undo');else hide('btn-undo');const hasLast=!!(gs.lastRoundBets?.[mySocketId]?.length);if(hasLast&&isBetting&&!myHasBets)show('btn-rebet');else hide('btn-rebet');if(myHasBets&&isBetting)show('btn-2x');else hide('btn-2x');}
+  else{if(isBetting)show('btn-undo');else hide('btn-undo');const hasLast=!!(gs.lastRoundBets?.[mySocketId]?.length);if(hasLast&&isBetting&&!myHasBets){show('btn-rebet');hide('btn-2x');}else{hide('btn-rebet');}if(myHasBets&&isBetting){show('btn-2x');hide('btn-rebet');}else if(!myHasBets||!isBetting){hide('btn-2x');}}
   const pb=$('play-buttons');
   if(pb){
-    // Only show during playing AND it's my turn (yourTurn event handles showing)
-    // Hide during betting, dealing, dealer_turn, game_over
-    if(status!=='playing'){pb.classList.add('betting-hidden');}
-    else if(isBetting){pb.classList.add('betting-hidden');}
-    // Don't remove betting-hidden here — only yourTurn socket event does that
+    // Only hide when not in playing phase — yourTurn/doAction manage show/hide during playing
+    if(status!=='playing') pb.classList.add('betting-hidden');
+    // During playing phase, don't touch it — yourTurn adds/removes betting-hidden
   }
   for(let i=1;i<=5;i++)renderSeat(String(i),gs,players);
   renderDealer(gs);
@@ -248,7 +292,8 @@ function renderState(gs,players,hostId){
 }
 function calcMyWinnings(gs){let t=0;for(const [sid,oid] of Object.entries(gs.seatOwners||{})){if(oid!==mySocketId)continue;const b=gs.badges?.[sid]||[];if(b.some(x=>x.cls==='bj'))t+=Math.floor(gs.bets[sid].main*2.5);else if(b.some(x=>x.cls==='win'))t+=gs.bets[sid].main*2;else if(b.some(x=>x.cls==='push'))t+=gs.bets[sid].main;if(gs.sideBetWins?.[sid]?.pp)t+=gs.sideBetWins[sid].pp.payout;if(gs.sideBetWins?.[sid]?.sp)t+=gs.sideBetWins[sid].sp.payout;}return t;}
 function updateStatusMsg(gs,players){const el=$('status-message');if(!el)return;const st=gs.gameStatus;if(st==='betting'||st==='idle'){if(gs.betsLocked&&gs.readyPlayers?.length){const n=new Set(gs.activeSeats.map(s=>gs.seatOwners?.[s]).filter(Boolean)).size;el.textContent=`Waiting for all to deal\u2026 (${gs.readyPlayers.length}/${n})`;}else el.textContent=Object.keys(gs.seatOwners||{}).length===0?'Click a seat to join!':'Place your bets';}else if(st==='dealing')el.textContent='Dealing\u2026';else if(st==='playing'&&activeTurnSid){const oid=gs.seatOwners?.[activeTurnSid],pn=oid?players[oid]?.name:'?';el.textContent=(oid===mySocketId)?`Your turn \u2014 Seat ${activeTurnSid}`:`${pn}'s turn`;}else if(st==='dealer_turn')el.textContent='Dealer\u2019s turn\u2026';else if(st==='game_over')el.textContent='Round over \u2014 next round soon\u2026';}
-function renderAdminPanel(gs,players,hostId){const canShow=mySocketId===hostId&&['betting','idle'].includes(gs.gameStatus);let panel=$('admin-panel');if(!canShow){if(panel)panel.remove();return;}if(!panel){panel=document.createElement('div');panel.id='admin-panel';const sc=$('settings-card');if(sc){const hr=document.createElement('hr');hr.style.cssText='border:none;border-top:1px solid rgba(255,255,255,0.1);margin:14px 0;';sc.insertBefore(hr,$('settings-close'));sc.insertBefore(panel,$('settings-close'));}else $('game-container')?.appendChild(panel);}const others=Object.entries(players).filter(([id])=>id!==mySocketId);if(!others.length){panel.innerHTML='<div class="admin-title" style="opacity:.4">No other players</div>';return;}panel.innerHTML=`<div class="admin-title">\ud83d\udc51 Kick Players</div>`+others.map(([id,p])=>`<div class="admin-row"><span class="admin-name">${p.name}</span><button class="admin-kick-btn" data-id="${id}">Kick</button></div>`).join('');panel.querySelectorAll('.admin-kick-btn').forEach(btn=>{btn.addEventListener('click',()=>{sfxClick();socket.emit('kickPlayer',{targetId:btn.dataset.id});});});}
+function renderAdminPanel(gs,players,hostId){const canShow=mySocketId===hostId&&['betting','idle'].includes(gs.gameStatus);let panel=$('admin-panel');if(!canShow){if(panel)panel.remove();return;}if(!panel){panel=document.createElement('div');panel.id='admin-panel';const sc=$('settings-card');if(sc){const hr=document.createElement('hr');hr.style.cssText='border:none;border-top:1px solid rgba(255,255,255,0.1);margin:14px 0;';sc.insertBefore(hr,$('settings-close'));sc.insertBefore(panel,$('settings-close'));}else $('game-container')?.appendChild(panel);}const others=Object.entries(players).filter(([id])=>id!==mySocketId);if(!others.length){panel.innerHTML='<div class="admin-title" style="opacity:.4">No other players</div>';return;}panel.innerHTML=`<div class="admin-title">\ud83d\udc51 Kick Players</div>`+others.map(([id,p])=>`<div class="admin-row"><span class="admin-name">${p.name}</span><div class="admin-action-btns"><button class="admin-kick-btn" data-id="${id}">Kick</button><button class="admin-ban-btn" data-id="${id}">Ban</button></div></div>`).join('');panel.querySelectorAll('.admin-kick-btn').forEach(btn=>{btn.addEventListener('click',()=>{sfxClick();socket.emit('kickPlayer',{targetId:btn.dataset.id});});});
+  panel.querySelectorAll('.admin-ban-btn').forEach(btn=>{btn.addEventListener('click',()=>{sfxClick();const name=btn.closest('.admin-row')?.querySelector('.admin-name')?.textContent||'this player';showConfirmModal(`Ban ${name}?`,`They won't be able to rejoin this room.`,'Ban','#ff9800',()=>socket.emit('banPlayer',{targetId:btn.dataset.id}));});});}
 
 // ── Seat Rendering ─────────────────────────────────────────────
 function renderSeat(sid,gs,players){
@@ -276,7 +321,7 @@ function renderSeat(sid,gs,players){
   // Only show active-turn outline during play phase, not betting
   seatEl.classList.toggle('active-turn', activeTurnSid===sid && !isBetting);
   if(isBetting){
-    seatEl.querySelectorAll('.circle-win-label').forEach(e=>e.remove());
+    seatEl.querySelectorAll('.circle-win-label,.win-chip-stack').forEach(e=>e.remove());
     seatEl.classList.remove('insurance-highlight');
   }
 }
@@ -287,15 +332,21 @@ function renderCircle(sid,type,gs,canBet){
   if(ba){if(type==='main'){const oid=gs.seatOwners?.[sid];if(!oid)circle.onclick=()=>{sfxClick();socket.emit('claimSeat',{sid});};else if(oid===mySocketId)circle.onclick=()=>{sfxChip();socket.emit('placeBet',{sid,type:'main',amt:selectedChip});};}else if(gs.seatOwners?.[sid]===mySocketId){circle.onclick=()=>{sfxChip();socket.emit('placeBet',{sid,type,amt:selectedChip});};}else if(!gs.seatOwners?.[sid]){circle.onclick=()=>{sfxClick();socket.emit('claimSeat',{sid});};}}
   circle.querySelectorAll('.chip-stack,.sidebet-win-pill').forEach(e=>e.remove());
   const wk=type==='pp'?'pp':'sp',wd=gs.sideBetWins?.[sid]?.[wk];
-  if(wd&&type!=='main'){renderSideBetWinPill(circle,wd);return;}
+  if(wd&&type!=='main'){renderSideBetWinPill(circle,wd,`${sid}_${type}`);return;}
   if(amt>0)renderChipStack(circle,amt,type==='main');
   circle.classList.toggle('has-bet',amt>0);
 }
-function renderSideBetWinPill(circle,wd){
+function renderSideBetWinPill(circle,wd,pillKey){
+  // Show the bouncing mult:1 pill only once per round
+  if(pillKey&&!shownSideBetPills.has(pillKey)){
+    shownSideBetPills.add(pillKey);
+    const pill=document.createElement('div');pill.className='sidebet-win-pill';pill.textContent=`${wd.mult}:1`;
+    circle.appendChild(pill);
+    setTimeout(()=>{if(pill.parentNode)pill.remove();},3000);
+  }
+  // Always render the winning chip stack
   renderChipStack(circle,wd.payout,false,true);
-  const pill=document.createElement('div');pill.className='sidebet-win-pill';pill.textContent=`${wd.mult}:1`;
-  circle.appendChild(pill);circle.classList.add('has-bet');
-  setTimeout(()=>{if(pill.parentNode)pill.remove();},3000);
+  circle.classList.add('has-bet');
 }
 function renderChipStack(circle,amt,isMain,isGold=false){
   const denom=[10000,5000,2000,1000,500,200,100,50,25,10,5,2,1];const chips=[];let rem=amt;
@@ -367,15 +418,50 @@ function renderBadges(sid,gs){
   seatEl.querySelectorAll('.result-badge').forEach(b=>b.remove());
   const badges=gs.badges?.[sid]||[],seen=new Set();
   for(const b of badges){if(seen.has(b.cls))continue;seen.add(b.cls);if(b.cls==='bj'&&gs.gameStatus==='game_over'&&gs.seatOwners?.[sid]===mySocketId&&!bjSoundedSeats.has(sid)){sfxWin();bjSoundedSeats.add(sid);}if(b.cls==='win'&&gs.gameStatus==='game_over'&&gs.seatOwners?.[sid]===mySocketId)sfxWin();if(b.cls==='lose'&&b.text==='Bust')sfxBust();}
+  // No text labels — show winnings as extra chips on the main-bet circle
   const mc=seatEl.querySelector('.bet-circle.main-bet');if(!mc)return;
   mc.querySelectorAll('.circle-win-label').forEach(e=>e.remove());
-  if(gs.gameStatus==='betting')return;if(!badges.length)return;
+  if(gs.gameStatus==='betting'||!badges.length)return;
   const hasBJ=badges.some(b=>b.cls==='bj'),hasWin=badges.some(b=>b.cls==='win'),hasPush=badges.some(b=>b.cls==='push');
-  const main=gs.bets?.[sid]?.main||0;const lbl=document.createElement('div');
-  if(hasBJ){lbl.className='circle-win-label bj-label';lbl.textContent='+'+fmt(Math.floor(main*2.5));}
-  else if(hasWin){lbl.className='circle-win-label';lbl.textContent='+'+fmt(main*2);}
-  else if(hasPush){lbl.className='circle-win-label push-label';lbl.textContent='+'+fmt(main)+' back';}
-  else return;mc.appendChild(lbl);
+  const main=gs.bets?.[sid]?.main||0;
+  if(!main)return;
+  // Calculate profit amount to show as extra chips
+  let profit=0,isGold=false;
+  if(hasBJ){profit=Math.floor(main*1.5);isGold=true;}  // BJ pays +1.5x
+  else if(hasWin){profit=main;}                          // Win pays +1x
+  else if(hasPush){return;}                              // Push: chips stay, nothing extra
+  // else lose: chips already gone on server side, nothing to add
+  if(profit<=0)return;
+  // Render the profit chips floating above the existing stack
+  renderWinChips(mc,profit,isGold);
+}
+
+function renderWinChips(circle,amt,isGold){
+  // Remove any previous win chips
+  circle.querySelectorAll('.win-chip-stack').forEach(e=>e.remove());
+  const denom=[10000,5000,2000,1000,500,200,100,50,25,10,5,2,1];
+  const chips=[];let rem=amt;
+  for(const d of denom){while(rem>=d&&chips.length<6){chips.push(d);rem-=d;}if(chips.length>=6)break;}
+  // Find existing chip-stack to know its height and offset profit chips above it
+  const existingStack=circle.querySelector('.chip-stack');
+  const baseCount=existingStack?existingStack.querySelectorAll('.stacked-chip').length:0;
+  const chipW=56,baseOffsetY=4,profitStartY=4+baseCount*baseOffsetY+chipW*0.3;
+  const stack=document.createElement('div');stack.className='chip-stack win-chip-stack';
+  chips.forEach((val,i)=>{
+    let c1,c2;
+    if(isGold){c1='#ffe066';c2='#c8900a';}
+    else{const cols=CHIP_COLORS[val]||'#888,#444';[c1,c2]=cols.split(',');}
+    const chip=document.createElement('div');chip.className='stacked-chip';
+    chip.style.cssText=`width:${chipW}px;height:${chipW}px;background:radial-gradient(circle at 35% 35%,${c1},${c2});bottom:${profitStartY+i*baseOffsetY}px;left:50%;transform:translateX(-50%);`;
+    stack.appendChild(chip);
+  });
+  const topY=profitStartY+(chips.length-1)*baseOffsetY;
+  const lbl=document.createElement('div');lbl.className='chip-stack-amt';
+  if(isGold)lbl.style.color='#ffd700';
+  lbl.style.bottom=(topY+chipW/2-9)+'px';lbl.style.top='auto';
+  lbl.textContent='+'+fmt(amt);
+  stack.appendChild(lbl);
+  circle.appendChild(stack);
 }
 
 // ── Card Factory ───────────────────────────────────────────────
@@ -400,8 +486,20 @@ function showPlayButtons(sid,handIdx){
   const hand=gs.splitActive?.[sid]?gs.hands?.[sid]?.['hand'+(handIdx+1)]||[]:gs.hands?.[sid]||[];
   const canDouble=hand.length===2&&myWallet>=(gs.bets?.[sid]?.main||0)&&!gs.doubled?.[sid];
   const canSplit=hand.length===2&&!gs.splitActive?.[sid]&&cardNum(hand[0])===cardNum(hand[1])&&myWallet>=(gs.bets?.[sid]?.main||0);
-  $('btn-double').classList.toggle('hidden',!canDouble);$('btn-split').classList.toggle('hidden',!canSplit);
-  show('play-buttons');actionPending=false;setTimeout(positionCountdownBorder,50);
+  const dbl=$('btn-double'),spl=$('btn-split'),hit=$('btn-hit'),std=$('btn-stand');
+  // Layout: double(left-flank) | hit | stand | split(right-flank)
+  // Use CSS order to keep hit/stand always centered regardless of which flanks are visible
+  if(dbl){dbl.classList.toggle('hidden',!canDouble);dbl.style.order=canDouble?'1':'0';}
+  if(hit)hit.style.order='2';
+  if(std)std.style.order='3';
+  if(spl){spl.classList.toggle('hidden',!canSplit);spl.style.order=canSplit?'4':'0';}
+  // Symmetry spacer: if double visible but split not (or vice versa), add invisible placeholder
+  document.getElementById('pb-spacer-right')?.remove();
+  document.getElementById('pb-spacer-left')?.remove();
+  const pb=$('play-buttons');
+  if(pb&&canDouble&&!canSplit){const sp=document.createElement('div');sp.id='pb-spacer-right';sp.style.cssText='width:86px;height:86px;order:4;flex-shrink:0;';pb.appendChild(sp);}
+  if(pb&&canSplit&&!canDouble){const sp=document.createElement('div');sp.id='pb-spacer-left';sp.style.cssText='width:86px;height:86px;order:1;flex-shrink:0;';pb.prepend(sp);}
+  const pbEl=$('play-buttons');if(pbEl){pbEl.classList.remove('betting-hidden');pbEl.classList.remove('hidden');}actionPending=false;setTimeout(positionCountdownBorder,50);
 }
 function doAction(action){
   if(!activeTurnSid||actionPending)return;
@@ -425,7 +523,7 @@ $('btn-split').addEventListener('click',()=>doAction('split'));
 // ── Chips ──────────────────────────────────────────────────────
 document.querySelectorAll('.chip').forEach(chip=>{chip.addEventListener('click',()=>{document.querySelectorAll('.chip').forEach(c=>c.classList.remove('selected'));chip.classList.add('selected');selectedChip=parseInt(chip.dataset.value);sfxChip();});});
 document.querySelector('.chip[data-value="100"]')?.classList.add('selected');
-$('btn-deal').addEventListener('click',()=>{sfxDeal();socket.emit('deal');});
+$('btn-deal').addEventListener('click',()=>{sfxDeal();socket.emit('deal');startDealCountdown();});
 $('btn-undo').addEventListener('click',()=>{sfxClick();socket.emit('undoBet');});
 $('btn-rebet').addEventListener('click',()=>{sfxClick();socket.emit('rebet');});
 $('btn-2x').addEventListener('click',()=>{sfxClick();socket.emit('doubleBets');});
@@ -437,16 +535,53 @@ function showInsuranceForSeat(sid,cost){
   const seatEl=$('seat-'+sid);if(seatEl)seatEl.classList.add('insurance-highlight');
   const modal=$('insurance-modal');
   modal.innerHTML=`<div id="insurance-title">\ud83c\udccf Seat ${sid} \u2014 Insurance?</div><div id="insurance-subtitle">Costs \u20ac${cost} \u00b7 Pays 2:1</div><div class="ins-shield-row"><button class="ins-shield ins-shield-yes" id="ins-yes-btn"><svg viewBox="0 0 60 70" fill="none" width="70" height="82"><path d="M30 4 L56 14 L56 36 C56 52 30 66 30 66 C30 66 4 52 4 36 L4 14 Z" fill="rgba(46,125,50,0.85)" stroke="#4caf50" stroke-width="2"/><polyline points="18,35 27,45 44,26" stroke="white" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg><span>YES</span></button><button class="ins-shield ins-shield-no" id="ins-no-btn"><svg viewBox="0 0 60 70" fill="none" width="70" height="82"><path d="M30 4 L56 14 L56 36 C56 52 30 66 30 66 C30 66 4 52 4 36 L4 14 Z" fill="rgba(198,40,40,0.85)" stroke="#ef5350" stroke-width="2"/><line x1="19" y1="25" x2="41" y2="47" stroke="white" stroke-width="4" stroke-linecap="round"/><line x1="41" y1="25" x2="19" y2="47" stroke="white" stroke-width="4" stroke-linecap="round"/></svg><span>NO</span></button></div>`;
-  function respond(insure){document.querySelectorAll('.seat.insurance-highlight').forEach(e=>e.classList.remove('insurance-highlight'));hide('insurance-modal');stopCountdown();socket.emit('insuranceResponse',{sid,insure});}
+  function respond(insure){document.querySelectorAll('.seat.insurance-highlight').forEach(e=>e.classList.remove('insurance-highlight'));hide('insurance-modal');stopCountdown();document.getElementById('ins-countdown-svg')?.remove();socket.emit('insuranceResponse',{sid,insure});}
   $('ins-yes-btn').addEventListener('click',()=>respond(true),{once:true});
   $('ins-no-btn').addEventListener('click',()=>respond(false),{once:true});
   show('insurance-modal');
-  startCountdown(15000,()=>respond(false));
+  // Countdown around insurance modal
+  setTimeout(()=>{
+    const m=$('insurance-modal');
+    if(!m||m.classList.contains('hidden')) return;
+    const rect=m.getBoundingClientRect();
+    document.getElementById('ins-countdown-svg')?.remove();
+    const pad=14, x=rect.left-pad, y=rect.top-pad;
+    const w=rect.width+pad*2, h=rect.height+pad*2, rx=26;
+    const mx=w/2;
+    const pathD=`M ${mx} 0 L ${w-rx} 0 Q ${w} 0 ${w} ${rx} L ${w} ${h-rx} Q ${w} ${h} ${w-rx} ${h} L ${rx} ${h} Q 0 ${h} 0 ${h-rx} L 0 ${rx} Q 0 0 ${rx} 0 Z`;
+    const perim=2*(w-2*rx)+2*(h-2*rx)+2*Math.PI*rx;
+    const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');
+    svg.id='ins-countdown-svg';
+    svg.style.cssText=`position:fixed;left:${x}px;top:${y}px;width:${w}px;height:${h}px;pointer-events:none;z-index:201;overflow:visible;`;
+    const track=document.createElementNS('http://www.w3.org/2000/svg','path');
+    track.setAttribute('d',pathD);track.setAttribute('fill','none');
+    track.setAttribute('stroke','rgba(255,255,255,0.12)');track.setAttribute('stroke-width','3.5');
+    const line=document.createElementNS('http://www.w3.org/2000/svg','path');
+    line.id='ins-cd-path';line.setAttribute('d',pathD);line.setAttribute('fill','none');
+    line.setAttribute('stroke','#fff');line.setAttribute('stroke-width','3.5');
+    line.setAttribute('stroke-linecap','round');line.setAttribute('stroke-linejoin','round');
+    line.setAttribute('stroke-dasharray',String(perim));line.setAttribute('stroke-dashoffset','0');
+    svg.appendChild(track);svg.appendChild(line);document.body.appendChild(svg);
+    let insRaf=null;
+    const start=performance.now(),dur=15000;
+    function tick(now){
+      const p=Math.min((now-start)/dur,1);
+      line.setAttribute('stroke-dashoffset',String(perim*p));
+      const r=Math.min(255,Math.round(255*p*2)),g=Math.max(0,Math.round(255*(1-p*1.5)));
+      line.setAttribute('stroke',`rgb(${r},${g},30)`);
+      if(p<1){insRaf=requestAnimationFrame(tick);}
+      else{if(insRaf)cancelAnimationFrame(insRaf);svg.remove();respond(false);}
+    }
+    insRaf=requestAnimationFrame(tick);
+    // Store so respond() can clean up
+    m._insRaf=insRaf;m._insSvg=svg;
+  },100);
 }
 
 // ── Win Overlay ────────────────────────────────────────────────
 function showWinOverlay(amount){if(winOverlayShown)return;winOverlayShown=true;sfxWin();document.querySelectorAll('.round-result-overlay').forEach(e=>e.remove());const ov=document.createElement('div');ov.className='round-result-overlay';ov.innerHTML=`<div class="rr-label">You Win!</div><div class="rr-amount">\u20ac${amount.toLocaleString()}</div>`;$('game-container').appendChild(ov);setTimeout(()=>ov.classList.add('rr-fadeout'),1800);setTimeout(()=>{ov.remove();winOverlayShown=false;},2600);}
 const ip=$('table-info-panel');if(ip){ip.addEventListener('mouseenter',()=>$('table-payout-menu')?.classList.add('visible'));ip.addEventListener('mouseleave',()=>$('table-payout-menu')?.classList.remove('visible'));}
+$('table-info-x')?.addEventListener('click',()=>{sfxClick();showLeaveConfirm();});
 
 // ── History ────────────────────────────────────────────────────
 $('btn-history')?.addEventListener('click',()=>{sfxClick();openHistoryPanel();});
