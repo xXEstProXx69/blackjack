@@ -72,6 +72,7 @@
   <div id="settings-modal" class="hidden">
     <div id="settings-card">
       <h2 id="settings-title">⚙ Settings</h2>
+      <div id="settings-version">v0.03</div>
       <div class="setting-row">
         <label>Display Name</label>
         <div class="setting-control setting-name-row">
@@ -153,7 +154,6 @@
       <div id="table-rules">Dealer must draw to 16 and stand on all 17s</div>
     </div>
     <div id="dealer-area">
-      <div class="area-label">Dealer</div>
       <div id="dealer-hand"></div>
       <div class="score-display hidden" id="dealer-score">0</div>
     </div>
@@ -282,14 +282,6 @@
       <span class="cubic-icon">2×</span>
       <span class="cubic-label">DOUBLE</span>
     </button>
-    <button id="btn-hit" class="action-cubic action-hit">
-      <span class="cubic-icon">+</span>
-      <span class="cubic-label">HIT</span>
-    </button>
-    <button id="btn-stand" class="action-cubic action-stand">
-      <span class="cubic-icon">−</span>
-      <span class="cubic-label">STAND</span>
-    </button>
     <button id="btn-split" class="action-cubic action-split hidden">
       <span class="cubic-icon">
         <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
@@ -300,6 +292,14 @@
         </svg>
       </span>
       <span class="cubic-label">SPLIT</span>
+    </button>
+    <button id="btn-hit" class="action-cubic action-hit">
+      <span class="cubic-icon">+</span>
+      <span class="cubic-label">HIT</span>
+    </button>
+    <button id="btn-stand" class="action-cubic action-stand">
+      <span class="cubic-icon">−</span>
+      <span class="cubic-label">STAND</span>
     </button>
   </div>
 

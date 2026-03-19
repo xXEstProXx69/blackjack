@@ -30,13 +30,15 @@ function suitIsRed(s){return s==='H'||s==='D';}
 function loadName(){try{return JSON.parse(localStorage.getItem('kk_name')||'null')||'';}catch(e){return'';}}
 function saveName(n){try{localStorage.setItem('kk_name',JSON.stringify(n));}catch(e){}}
 function loadHistory(){try{return JSON.parse(localStorage.getItem('kk_history')||'[]');}catch(e){return[];}}
+function loadToken(){try{let t=localStorage.getItem('kk_token');if(!t){t=Math.random().toString(36).slice(2)+Math.random().toString(36).slice(2);localStorage.setItem('kk_token',t);}return t;}catch(e){return'anon_'+Date.now();}}
+const myToken=loadToken();
 function saveHistory(h){try{localStorage.setItem('kk_history',JSON.stringify(h));}catch(e){}}
 function pushRound(e){const h=loadHistory();h.unshift(e);if(h.length>500)h.length=500;saveHistory(h);}
 (function(){const s=loadName();if(s){const i=$('lobby-name');if(i)i.value=s;}})();
 
 // ── Lobby ──────────────────────────────────────────────────────
-$('btn-create-room').addEventListener('click',()=>{const name=$('lobby-name').value.trim();if(!name){showLobbyError('Enter your name first');return;}myName=name;saveName(name);socket.emit('createRoom',{name,wallet:5000});});
-$('btn-join-room').addEventListener('click',()=>{const name=$('lobby-name').value.trim();const code=$('lobby-code-input').value.trim().toUpperCase();if(!name){showLobbyError('Enter your name first');return;}if(code.length!==4){showLobbyError('Enter a 4-digit room code');return;}myName=name;saveName(name);socket.emit('joinRoom',{code,name,wallet:5000});});
+$('btn-create-room').addEventListener('click',()=>{const name=$('lobby-name').value.trim();if(!name){showLobbyError('Enter your name first');return;}myName=name;saveName(name);socket.emit('createRoom',{name,wallet:5000,token:myToken});});
+$('btn-join-room').addEventListener('click',()=>{const name=$('lobby-name').value.trim();const code=$('lobby-code-input').value.trim().toUpperCase();if(!name){showLobbyError('Enter your name first');return;}if(code.length!==4){showLobbyError('Enter a 4-digit room code');return;}myName=name;saveName(name);socket.emit('joinRoom',{code,name,wallet:5000,token:myToken});});
 $('lobby-code-input').addEventListener('keydown',e=>{if(e.key==='Enter')$('btn-join-room').click();});
 $('lobby-name').addEventListener('keydown',e=>{if(e.key==='Enter')$('btn-create-room').click();});
 $('btn-start-game').addEventListener('click',()=>{sfxClick();socket.emit('startGame');});
@@ -50,11 +52,13 @@ socket.on('roomJoined',({code,socketId,isHost})=>{mySocketId=socketId;roomCode=c
 socket.on('roomError',msg=>showLobbyError(msg));
 socket.on('gameLaunched',()=>launchGame());
 socket.on('autoLaunch',()=>launchGame());
+socket.on('banned',()=>{const m=document.createElement('div');m.className='kick-modal';m.innerHTML='<div class="kick-card"><div class="kick-title" style="color:#ff9800">🚫 You are banned</div><div style="color:rgba(255,255,255,0.5);font-size:.85rem;margin-bottom:20px;">You were banned from this room by the host.</div><button onclick="location.reload()" class="kick-btn">Back to Lobby</button></div>';document.body.appendChild(m);});
 socket.on('kicked',()=>{const m=document.createElement('div');m.className='kick-modal';m.innerHTML='<div class="kick-card"><div class="kick-title">You were kicked</div><button onclick="location.reload()" class="kick-btn">Back to Lobby</button></div>';document.body.appendChild(m);});
 socket.on('hostChanged',({hostId})=>{updateWaitingHostUI(hostId===mySocketId);if(hostId===mySocketId){const t=document.createElement('div');t.className='host-toast';t.textContent='\ud83d\udc51 You are now the host';document.body.appendChild(t);setTimeout(()=>t.remove(),3000);}});
 function updateWaitingHostUI(isHost){const b=$('btn-start-game');if(b)b.style.display=isHost?'':'none';}
 socket.on('insuranceOfferSeat',({sid,cost})=>showInsuranceForSeat(sid,cost));
-socket.on('stateUpdate',({gs,players,hostId})=>{const wl=$('waiting-players');if(wl)wl.innerHTML=Object.entries(players).map(([id,p])=>`<div class="waiting-player">${id===hostId?'<span class="lobby-crown">\ud83d\udc51</span>':''}${p.name}</div>`).join('');const sb=$('btn-start-game');if(sb)sb.style.display=(mySocketId===hostId)?'':'none';if(!gs.insurancePhase){document.querySelectorAll('.seat.insurance-highlight').forEach(e=>e.classList.remove('insurance-highlight'));$('insurance-modal')?.classList.add('hidden');}trackRound(gs,players);renderState(gs,players,hostId);prevGs=JSON.parse(JSON.stringify(gs));});
+socket.on('stateUpdate',({gs,players,hostId})=>{const wl=$('waiting-players');if(wl)wl.innerHTML=Object.entries(players).map(([id,p])=>`<div class="waiting-player">${id===hostId?'<span class="lobby-crown">\ud83d\udc51</span>':''}${p.name}</div>`).join('');const sb=$('btn-start-game');if(sb)sb.style.display=(mySocketId===hostId)?'':'none';// Always sync room badge
+if(roomCode){const rb=$('room-badge-code');if(rb)rb.textContent=roomCode;}if(!gs.insurancePhase){document.querySelectorAll('.seat.insurance-highlight').forEach(e=>e.classList.remove('insurance-highlight'));$('insurance-modal')?.classList.add('hidden');}trackRound(gs,players);renderState(gs,players,hostId);prevGs=JSON.parse(JSON.stringify(gs));});
 socket.on('timerTick',secs=>{
   const gs=prevGs;
   // Cancel timer display if no chips placed anywhere
@@ -82,7 +86,7 @@ socket.on('yourTurn',({sid,handIdx,ownerId})=>{
   }
 });
 socket.on('dealVote',({ready,needed,readyIds})=>{const b=$('btn-deal');if(!b)return;if(readyIds.includes(mySocketId)){b.textContent=`Waiting\u2026 (${ready}/${needed})`;b.disabled=true;b.style.opacity='0.6';}else{b.textContent=`Deal (${ready}/${needed} ready)`;b.disabled=false;b.style.opacity='1';}});
-socket.on('stateUpdate',({gs})=>{if(gs.gameStatus==='betting'){winOverlayShown=false;activeTurnSid=null;actionPending=false;bjSoundedSeats.clear();stopCountdown();hide('play-buttons');const db=$('btn-deal');if(db){db.disabled=false;db.style.opacity='1';db.textContent='DEAL';}document.querySelectorAll('.card,.card-back').forEach(c=>c.classList.add('fly-out'));document.querySelectorAll('.circle-win-label').forEach(e=>e.remove());Object.keys(_prevScores).forEach(k=>delete _prevScores[k]);}});
+socket.on('stateUpdate',({gs})=>{if(gs.gameStatus==='betting'){winOverlayShown=false;activeTurnSid=null;actionPending=false;bjSoundedSeats.clear();stopCountdown();hide('play-buttons');const db=$('btn-deal');if(db){db.disabled=false;db.style.opacity='1';db.textContent='DEAL';}document.querySelectorAll('.card,.card-back').forEach(c=>c.classList.add('fly-out'));stopDealCountdown();document.querySelectorAll('.circle-win-label').forEach(e=>e.remove());Object.keys(_prevScores).forEach(k=>delete _prevScores[k]);}});
 
 // ── Smooth countdown rectangle ─────────────────────────────────
 function startCountdown(durationMs,onTimeout){
@@ -167,6 +171,45 @@ function stopCountdown(){
   const svg=document.getElementById('countdown-ring-svg');
   if(svg){svg.style.transition='opacity 0.3s';svg.style.opacity='0';setTimeout(()=>svg.remove(),350);}
 }
+// Countdown around deal button
+let dealCountdownRaf=null;
+function startDealCountdown(){
+  if(dealCountdownRaf){cancelAnimationFrame(dealCountdownRaf);dealCountdownRaf=null;}
+  document.getElementById('deal-countdown-svg')?.remove();
+  const dealBtn=$('btn-deal');if(!dealBtn)return;
+  const rect=dealBtn.getBoundingClientRect();
+  const pad=10;
+  const x=rect.left-pad, y=rect.top-pad;
+  const w=rect.width+pad*2, h=rect.height+pad*2;
+  const rx=30;
+  const mx=w/2;
+  const pathD=`M ${mx} 0 L ${w-rx} 0 Q ${w} 0 ${w} ${rx} L ${w} ${h-rx} Q ${w} ${h} ${w-rx} ${h} L ${rx} ${h} Q 0 ${h} 0 ${h-rx} L 0 ${rx} Q 0 0 ${rx} 0 Z`;
+  const perim=2*(w-2*rx)+2*(h-2*rx)+2*Math.PI*rx;
+  const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');
+  svg.id='deal-countdown-svg';
+  svg.style.cssText=`position:fixed;left:${x}px;top:${y}px;width:${w}px;height:${h}px;pointer-events:none;z-index:199;overflow:visible;`;
+  const track=document.createElementNS('http://www.w3.org/2000/svg','path');
+  track.setAttribute('d',pathD);track.setAttribute('fill','none');
+  track.setAttribute('stroke','rgba(0,0,0,0.2)');track.setAttribute('stroke-width','3');
+  const line=document.createElementNS('http://www.w3.org/2000/svg','path');
+  line.id='deal-cd-path';line.setAttribute('d',pathD);line.setAttribute('fill','none');
+  line.setAttribute('stroke','#000');line.setAttribute('stroke-width','3');
+  line.setAttribute('stroke-linecap','round');line.setAttribute('stroke-linejoin','round');
+  line.setAttribute('stroke-dasharray',String(perim));line.setAttribute('stroke-dashoffset','0');
+  svg.appendChild(track);svg.appendChild(line);document.body.appendChild(svg);
+  const start=performance.now(), dur=15000;
+  function tick(now){
+    const p=Math.min((now-start)/dur,1);
+    line.setAttribute('stroke-dashoffset',String(perim*p));
+    if(p<1){dealCountdownRaf=requestAnimationFrame(tick);}
+    else{cancelAnimationFrame(dealCountdownRaf);dealCountdownRaf=null;svg.remove();}
+  }
+  dealCountdownRaf=requestAnimationFrame(tick);
+}
+function stopDealCountdown(){
+  if(dealCountdownRaf){cancelAnimationFrame(dealCountdownRaf);dealCountdownRaf=null;}
+  document.getElementById('deal-countdown-svg')?.remove();
+}
 function positionCountdownBorder(){buildCountdownSVG();}
 function autoPlayAction(sid,handIdx){
   if(!activeTurnSid||actionPending)return;
@@ -230,15 +273,13 @@ function renderState(gs,players,hostId){
   const db=$('btn-deal');if(db&&!myReady){db.disabled=false;db.style.opacity='1';if(!bLocked)db.textContent='DEAL';}
   const ct=$('chip-tray');if(ct){ct.classList.remove('hidden');if(isBetting)ct.classList.remove('tray-hidden');else ct.classList.add('tray-hidden');}
   const ca=$('chip-action-floats');if(ca){if(isBetting)ca.classList.remove('hidden');else ca.classList.add('hidden');}
-  if(bLocked){hide('btn-undo');hide('btn-rebet');hide('btn-2x');}
-  else{if(isBetting)show('btn-undo');else hide('btn-undo');const hasLast=!!(gs.lastRoundBets?.[mySocketId]?.length);if(hasLast&&isBetting&&!myHasBets)show('btn-rebet');else hide('btn-rebet');if(myHasBets&&isBetting)show('btn-2x');else hide('btn-2x');}
+  if(bLocked){hide('btn-undo');hide('action-btn-left');hide('btn-rebet');hide('btn-2x');hide('action-btn-right');}
+  else{if(isBetting){show('btn-undo');show('action-btn-left');}else{hide('btn-undo');hide('action-btn-left');}const hasLast=!!(gs.lastRoundBets?.[mySocketId]?.length);if(hasLast&&isBetting&&!myHasBets){show('btn-rebet');show('action-btn-right');}else{hide('btn-rebet');}if(myHasBets&&isBetting){show('btn-2x');show('action-btn-right');}else{hide('btn-2x');if(!myHasBets||!isBetting)hide('action-btn-right');}}
   const pb=$('play-buttons');
   if(pb){
-    // Only show during playing AND it's my turn (yourTurn event handles showing)
-    // Hide during betting, dealing, dealer_turn, game_over
-    if(status!=='playing'){pb.classList.add('betting-hidden');}
-    else if(isBetting){pb.classList.add('betting-hidden');}
-    // Don't remove betting-hidden here — only yourTurn socket event does that
+    // Only hide when not in playing phase — yourTurn/doAction manage show/hide during playing
+    if(status!=='playing') pb.classList.add('betting-hidden');
+    // During playing phase, don't touch it — yourTurn adds/removes betting-hidden
   }
   for(let i=1;i<=5;i++)renderSeat(String(i),gs,players);
   renderDealer(gs);
@@ -248,7 +289,8 @@ function renderState(gs,players,hostId){
 }
 function calcMyWinnings(gs){let t=0;for(const [sid,oid] of Object.entries(gs.seatOwners||{})){if(oid!==mySocketId)continue;const b=gs.badges?.[sid]||[];if(b.some(x=>x.cls==='bj'))t+=Math.floor(gs.bets[sid].main*2.5);else if(b.some(x=>x.cls==='win'))t+=gs.bets[sid].main*2;else if(b.some(x=>x.cls==='push'))t+=gs.bets[sid].main;if(gs.sideBetWins?.[sid]?.pp)t+=gs.sideBetWins[sid].pp.payout;if(gs.sideBetWins?.[sid]?.sp)t+=gs.sideBetWins[sid].sp.payout;}return t;}
 function updateStatusMsg(gs,players){const el=$('status-message');if(!el)return;const st=gs.gameStatus;if(st==='betting'||st==='idle'){if(gs.betsLocked&&gs.readyPlayers?.length){const n=new Set(gs.activeSeats.map(s=>gs.seatOwners?.[s]).filter(Boolean)).size;el.textContent=`Waiting for all to deal\u2026 (${gs.readyPlayers.length}/${n})`;}else el.textContent=Object.keys(gs.seatOwners||{}).length===0?'Click a seat to join!':'Place your bets';}else if(st==='dealing')el.textContent='Dealing\u2026';else if(st==='playing'&&activeTurnSid){const oid=gs.seatOwners?.[activeTurnSid],pn=oid?players[oid]?.name:'?';el.textContent=(oid===mySocketId)?`Your turn \u2014 Seat ${activeTurnSid}`:`${pn}'s turn`;}else if(st==='dealer_turn')el.textContent='Dealer\u2019s turn\u2026';else if(st==='game_over')el.textContent='Round over \u2014 next round soon\u2026';}
-function renderAdminPanel(gs,players,hostId){const canShow=mySocketId===hostId&&['betting','idle'].includes(gs.gameStatus);let panel=$('admin-panel');if(!canShow){if(panel)panel.remove();return;}if(!panel){panel=document.createElement('div');panel.id='admin-panel';const sc=$('settings-card');if(sc){const hr=document.createElement('hr');hr.style.cssText='border:none;border-top:1px solid rgba(255,255,255,0.1);margin:14px 0;';sc.insertBefore(hr,$('settings-close'));sc.insertBefore(panel,$('settings-close'));}else $('game-container')?.appendChild(panel);}const others=Object.entries(players).filter(([id])=>id!==mySocketId);if(!others.length){panel.innerHTML='<div class="admin-title" style="opacity:.4">No other players</div>';return;}panel.innerHTML=`<div class="admin-title">\ud83d\udc51 Kick Players</div>`+others.map(([id,p])=>`<div class="admin-row"><span class="admin-name">${p.name}</span><button class="admin-kick-btn" data-id="${id}">Kick</button></div>`).join('');panel.querySelectorAll('.admin-kick-btn').forEach(btn=>{btn.addEventListener('click',()=>{sfxClick();socket.emit('kickPlayer',{targetId:btn.dataset.id});});});}
+function renderAdminPanel(gs,players,hostId){const canShow=mySocketId===hostId&&['betting','idle'].includes(gs.gameStatus);let panel=$('admin-panel');if(!canShow){if(panel)panel.remove();return;}if(!panel){panel=document.createElement('div');panel.id='admin-panel';const sc=$('settings-card');if(sc){const hr=document.createElement('hr');hr.style.cssText='border:none;border-top:1px solid rgba(255,255,255,0.1);margin:14px 0;';sc.insertBefore(hr,$('settings-close'));sc.insertBefore(panel,$('settings-close'));}else $('game-container')?.appendChild(panel);}const others=Object.entries(players).filter(([id])=>id!==mySocketId);if(!others.length){panel.innerHTML='<div class="admin-title" style="opacity:.4">No other players</div>';return;}panel.innerHTML=`<div class="admin-title">\ud83d\udc51 Kick Players</div>`+others.map(([id,p])=>`<div class="admin-row"><span class="admin-name">${p.name}</span><div class="admin-action-btns"><button class="admin-kick-btn" data-id="${id}">Kick</button><button class="admin-ban-btn" data-id="${id}">Ban</button></div></div>`).join('');panel.querySelectorAll('.admin-kick-btn').forEach(btn=>{btn.addEventListener('click',()=>{sfxClick();socket.emit('kickPlayer',{targetId:btn.dataset.id});});});
+  panel.querySelectorAll('.admin-ban-btn').forEach(btn=>{btn.addEventListener('click',()=>{sfxClick();if(confirm('Ban this player from the room?'))socket.emit('banPlayer',{targetId:btn.dataset.id});});});}
 
 // ── Seat Rendering ─────────────────────────────────────────────
 function renderSeat(sid,gs,players){
@@ -401,7 +443,7 @@ function showPlayButtons(sid,handIdx){
   const canDouble=hand.length===2&&myWallet>=(gs.bets?.[sid]?.main||0)&&!gs.doubled?.[sid];
   const canSplit=hand.length===2&&!gs.splitActive?.[sid]&&cardNum(hand[0])===cardNum(hand[1])&&myWallet>=(gs.bets?.[sid]?.main||0);
   $('btn-double').classList.toggle('hidden',!canDouble);$('btn-split').classList.toggle('hidden',!canSplit);
-  show('play-buttons');actionPending=false;setTimeout(positionCountdownBorder,50);
+  const pbEl=$('play-buttons');if(pbEl){pbEl.classList.remove('betting-hidden');pbEl.classList.remove('hidden');}actionPending=false;setTimeout(positionCountdownBorder,50);
 }
 function doAction(action){
   if(!activeTurnSid||actionPending)return;
@@ -425,7 +467,7 @@ $('btn-split').addEventListener('click',()=>doAction('split'));
 // ── Chips ──────────────────────────────────────────────────────
 document.querySelectorAll('.chip').forEach(chip=>{chip.addEventListener('click',()=>{document.querySelectorAll('.chip').forEach(c=>c.classList.remove('selected'));chip.classList.add('selected');selectedChip=parseInt(chip.dataset.value);sfxChip();});});
 document.querySelector('.chip[data-value="100"]')?.classList.add('selected');
-$('btn-deal').addEventListener('click',()=>{sfxDeal();socket.emit('deal');});
+$('btn-deal').addEventListener('click',()=>{sfxDeal();socket.emit('deal');startDealCountdown();});
 $('btn-undo').addEventListener('click',()=>{sfxClick();socket.emit('undoBet');});
 $('btn-rebet').addEventListener('click',()=>{sfxClick();socket.emit('rebet');});
 $('btn-2x').addEventListener('click',()=>{sfxClick();socket.emit('doubleBets');});
@@ -437,11 +479,47 @@ function showInsuranceForSeat(sid,cost){
   const seatEl=$('seat-'+sid);if(seatEl)seatEl.classList.add('insurance-highlight');
   const modal=$('insurance-modal');
   modal.innerHTML=`<div id="insurance-title">\ud83c\udccf Seat ${sid} \u2014 Insurance?</div><div id="insurance-subtitle">Costs \u20ac${cost} \u00b7 Pays 2:1</div><div class="ins-shield-row"><button class="ins-shield ins-shield-yes" id="ins-yes-btn"><svg viewBox="0 0 60 70" fill="none" width="70" height="82"><path d="M30 4 L56 14 L56 36 C56 52 30 66 30 66 C30 66 4 52 4 36 L4 14 Z" fill="rgba(46,125,50,0.85)" stroke="#4caf50" stroke-width="2"/><polyline points="18,35 27,45 44,26" stroke="white" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg><span>YES</span></button><button class="ins-shield ins-shield-no" id="ins-no-btn"><svg viewBox="0 0 60 70" fill="none" width="70" height="82"><path d="M30 4 L56 14 L56 36 C56 52 30 66 30 66 C30 66 4 52 4 36 L4 14 Z" fill="rgba(198,40,40,0.85)" stroke="#ef5350" stroke-width="2"/><line x1="19" y1="25" x2="41" y2="47" stroke="white" stroke-width="4" stroke-linecap="round"/><line x1="41" y1="25" x2="19" y2="47" stroke="white" stroke-width="4" stroke-linecap="round"/></svg><span>NO</span></button></div>`;
-  function respond(insure){document.querySelectorAll('.seat.insurance-highlight').forEach(e=>e.classList.remove('insurance-highlight'));hide('insurance-modal');stopCountdown();socket.emit('insuranceResponse',{sid,insure});}
+  function respond(insure){document.querySelectorAll('.seat.insurance-highlight').forEach(e=>e.classList.remove('insurance-highlight'));hide('insurance-modal');stopCountdown();document.getElementById('ins-countdown-svg')?.remove();socket.emit('insuranceResponse',{sid,insure});}
   $('ins-yes-btn').addEventListener('click',()=>respond(true),{once:true});
   $('ins-no-btn').addEventListener('click',()=>respond(false),{once:true});
   show('insurance-modal');
-  startCountdown(15000,()=>respond(false));
+  // Countdown around insurance modal
+  setTimeout(()=>{
+    const m=$('insurance-modal');
+    if(!m||m.classList.contains('hidden')) return;
+    const rect=m.getBoundingClientRect();
+    document.getElementById('ins-countdown-svg')?.remove();
+    const pad=14, x=rect.left-pad, y=rect.top-pad;
+    const w=rect.width+pad*2, h=rect.height+pad*2, rx=26;
+    const mx=w/2;
+    const pathD=`M ${mx} 0 L ${w-rx} 0 Q ${w} 0 ${w} ${rx} L ${w} ${h-rx} Q ${w} ${h} ${w-rx} ${h} L ${rx} ${h} Q 0 ${h} 0 ${h-rx} L 0 ${rx} Q 0 0 ${rx} 0 Z`;
+    const perim=2*(w-2*rx)+2*(h-2*rx)+2*Math.PI*rx;
+    const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');
+    svg.id='ins-countdown-svg';
+    svg.style.cssText=`position:fixed;left:${x}px;top:${y}px;width:${w}px;height:${h}px;pointer-events:none;z-index:201;overflow:visible;`;
+    const track=document.createElementNS('http://www.w3.org/2000/svg','path');
+    track.setAttribute('d',pathD);track.setAttribute('fill','none');
+    track.setAttribute('stroke','rgba(255,255,255,0.12)');track.setAttribute('stroke-width','3.5');
+    const line=document.createElementNS('http://www.w3.org/2000/svg','path');
+    line.id='ins-cd-path';line.setAttribute('d',pathD);line.setAttribute('fill','none');
+    line.setAttribute('stroke','#fff');line.setAttribute('stroke-width','3.5');
+    line.setAttribute('stroke-linecap','round');line.setAttribute('stroke-linejoin','round');
+    line.setAttribute('stroke-dasharray',String(perim));line.setAttribute('stroke-dashoffset','0');
+    svg.appendChild(track);svg.appendChild(line);document.body.appendChild(svg);
+    let insRaf=null;
+    const start=performance.now(),dur=15000;
+    function tick(now){
+      const p=Math.min((now-start)/dur,1);
+      line.setAttribute('stroke-dashoffset',String(perim*p));
+      const r=Math.min(255,Math.round(255*p*2)),g=Math.max(0,Math.round(255*(1-p*1.5)));
+      line.setAttribute('stroke',`rgb(${r},${g},30)`);
+      if(p<1){insRaf=requestAnimationFrame(tick);}
+      else{if(insRaf)cancelAnimationFrame(insRaf);svg.remove();respond(false);}
+    }
+    insRaf=requestAnimationFrame(tick);
+    // Store so respond() can clean up
+    m._insRaf=insRaf;m._insSvg=svg;
+  },100);
 }
 
 // ── Win Overlay ────────────────────────────────────────────────
