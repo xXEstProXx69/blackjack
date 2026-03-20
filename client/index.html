@@ -72,7 +72,7 @@
   <div id="settings-modal" class="hidden">
     <div id="settings-card">
       <h2 id="settings-title">⚙ Settings</h2>
-      <div id="settings-version">v0.03</div>
+      <div id="settings-version">v0.16</div>
       <div class="setting-row">
         <label>Display Name</label>
         <div class="setting-control setting-name-row">
@@ -155,13 +155,13 @@
     </div>
     <div id="dealer-area">
       <div id="dealer-hand"></div>
-      <div class="score-display hidden" id="dealer-score">0</div>
+      <div class="score-display hidden" id="dealer-score"><span class="bust-num"></span><span class="bust-icon">💥</span></div>
     </div>
     <div id="seats-container">
       <!-- SEAT 1 -->
       <div class="seat" id="seat-1" data-seat="1">
         <div class="player-hand" id="hand-1"></div>
-        <div class="score-display hidden" id="score-1">0</div>
+        <div class="score-display hidden" id="score-1"><span class="bust-num"></span><span class="bust-icon">💥</span></div>
         <div class="betting-circles">
           <div class="bet-circle side-bet pp" data-seat="1" data-type="pp"><span class="bet-label">PP</span><span class="bet-amount"></span></div>
           <div class="bet-circle main-bet" data-seat="1" data-type="main">
@@ -171,12 +171,17 @@
           <div class="bet-circle side-bet sp" data-seat="1" data-type="sp"><span class="bet-label">21+3</span><span class="bet-amount"></span></div>
         </div>
         <div class="seat-name-tag hidden"></div>
+        <div class="seat-bottom-ind hidden" id="sind-5"></div>
+        <div class="seat-bottom-ind hidden" id="sind-4"></div>
+        <div class="seat-bottom-ind hidden" id="sind-3"></div>
+        <div class="seat-bottom-ind hidden" id="sind-2"></div>
+        <div class="seat-bottom-ind hidden" id="sind-1"></div>
         <button class="leave-seat-btn hidden" title="Leave seat">✕</button>
       </div>
       <!-- SEAT 2 -->
       <div class="seat" id="seat-2" data-seat="2">
         <div class="player-hand" id="hand-2"></div>
-        <div class="score-display hidden" id="score-2">0</div>
+        <div class="score-display hidden" id="score-2"><span class="bust-num"></span><span class="bust-icon">💥</span></div>
         <div class="betting-circles">
           <div class="bet-circle side-bet pp" data-seat="2" data-type="pp"><span class="bet-label">PP</span><span class="bet-amount"></span></div>
           <div class="bet-circle main-bet" data-seat="2" data-type="main">
@@ -191,7 +196,7 @@
       <!-- SEAT 3 -->
       <div class="seat" id="seat-3" data-seat="3">
         <div class="player-hand" id="hand-3"></div>
-        <div class="score-display hidden" id="score-3">0</div>
+        <div class="score-display hidden" id="score-3"><span class="bust-num"></span><span class="bust-icon">💥</span></div>
         <div class="betting-circles">
           <div class="bet-circle side-bet pp" data-seat="3" data-type="pp"><span class="bet-label">PP</span><span class="bet-amount"></span></div>
           <div class="bet-circle main-bet" data-seat="3" data-type="main">
@@ -206,7 +211,7 @@
       <!-- SEAT 4 -->
       <div class="seat" id="seat-4" data-seat="4">
         <div class="player-hand" id="hand-4"></div>
-        <div class="score-display hidden" id="score-4">0</div>
+        <div class="score-display hidden" id="score-4"><span class="bust-num"></span><span class="bust-icon">💥</span></div>
         <div class="betting-circles">
           <div class="bet-circle side-bet pp" data-seat="4" data-type="pp"><span class="bet-label">PP</span><span class="bet-amount"></span></div>
           <div class="bet-circle main-bet" data-seat="4" data-type="main">
@@ -221,7 +226,7 @@
       <!-- SEAT 5 -->
       <div class="seat" id="seat-5" data-seat="5">
         <div class="player-hand" id="hand-5"></div>
-        <div class="score-display hidden" id="score-5">0</div>
+        <div class="score-display hidden" id="score-5"><span class="bust-num"></span><span class="bust-icon">💥</span></div>
         <div class="betting-circles">
           <div class="bet-circle side-bet pp" data-seat="5" data-type="pp"><span class="bet-label">PP</span><span class="bet-amount"></span></div>
           <div class="bet-circle main-bet" data-seat="5" data-type="main">
