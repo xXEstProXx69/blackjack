@@ -190,6 +190,22 @@ html,body{width:100%;height:100%;overflow:hidden;font-family:'Rajdhani',sans-ser
 @keyframes winChipDrop{from{opacity:0;transform:translateX(-50%) translateY(-20px) scale(0.7);}to{opacity:1;transform:translateX(-50%) scale(1);}}
 .win-chip-stack .chip-stack-amt{color:#fff;font-size:.65rem;background:rgba(0,0,0,0.9);border-color:rgba(255,255,255,0.35);}
 .split-bet-circle{width:66px;height:66px;border-radius:50%;border:2px dashed rgba(100,200,255,0.6);background:rgba(100,200,255,0.08);position:relative;display:flex;align-items:center;justify-content:center;flex-shrink:0;overflow:visible;}
+.split-chips-row{display:flex;justify-content:space-around;align-items:flex-end;width:100%;padding:0;gap:0;margin:2px 0 2px;}
+.split-chip-slot{display:flex;flex-direction:column;align-items:center;gap:3px;flex:1;}
+.split-chip-label{font-family:'Rajdhani',sans-serif;font-size:.55rem;font-weight:700;letter-spacing:.1em;color:rgba(100,200,255,0.6);text-transform:uppercase;}
+
+/* History detail enhancements */
+.hd-table-map{padding:10px 20px 6px;border-bottom:1px solid rgba(255,255,255,0.06);}
+.hd-table-map-title{font-family:'Rajdhani',sans-serif;font-size:.65rem;font-weight:700;letter-spacing:.15em;text-transform:uppercase;color:rgba(255,255,255,0.3);margin-bottom:8px;}
+.hd-table-row{display:flex;align-items:center;justify-content:center;gap:6px;margin-bottom:6px;}
+.hd-seat-dot{width:28px;height:28px;border-radius:50%;border:2px solid rgba(255,255,255,0.25);background:rgba(255,255,255,0.06);display:flex;align-items:center;justify-content:center;font-family:'Rajdhani',sans-serif;font-weight:700;font-size:.72rem;color:rgba(255,255,255,0.4);flex-shrink:0;transition:all .2s;}
+.hd-seat-dot.mine{border-color:#ffd700;background:rgba(255,215,0,0.15);color:#ffd700;}
+.hd-seat-dot.taken{border-color:rgba(255,255,255,0.4);color:rgba(255,255,255,0.6);}
+.hd-move-chip{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:50%;font-size:.6rem;font-weight:900;margin-left:3px;flex-shrink:0;}
+.hd-move-chip.hit-chip{background:rgba(46,125,50,0.85);color:#fff;}
+.hd-move-chip.stand-chip{background:rgba(198,40,40,0.85);color:#fff;}
+.hd-move-chip.double-chip{background:rgba(255,152,0,0.85);color:#fff;}
+.hd-move-chip.bust-chip{background:rgba(80,80,80,0.85);color:#aaa;}
 
 /* ── CARDS ── */
 .card{width:64px;height:90px;border-radius:7px;overflow:hidden;box-shadow:3px 5px 14px rgba(0,0,0,0.7);border:1px solid rgba(255,255,255,0.18);flex-shrink:0;margin-left:-10px;background-size:100% 100%;background-repeat:no-repeat;background-color:#fff;}
@@ -292,7 +308,8 @@ html,body{width:100%;height:100%;overflow:hidden;font-family:'Rajdhani',sans-ser
 /* ── INSURANCE ── */
 #insurance-modal{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);z-index:200;background:rgba(10,20,10,0.96);border:1px solid rgba(255,215,0,0.3);border-radius:20px;padding:28px 36px;text-align:center;backdrop-filter:blur(16px);box-shadow:0 20px 60px rgba(0,0,0,0.8);min-width:280px;}
 #insurance-title{font-family:'Playfair Display',serif;font-size:1.1rem;color:#ffd700;margin-bottom:6px;}
-#insurance-subtitle{font-size:.78rem;color:rgba(255,255,255,0.5);margin-bottom:16px;}
+#insurance-subtitle{font-size:.78rem;color:rgba(255,255,255,0.5);margin-bottom:8px;}
+#ins-cant-afford{font-size:.72rem;color:#ef5350;font-weight:700;margin-bottom:12px;letter-spacing:.04em;}
 #insurance-seats{}
 .ins-shield-row{display:flex;gap:24px;justify-content:center;margin:4px 0;}
 .ins-shield{width:110px;height:130px;background:none;border:2px solid transparent;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:8px;border-radius:16px;padding:12px 8px;transition:transform .18s,box-shadow .18s;}
@@ -327,7 +344,7 @@ html,body{width:100%;height:100%;overflow:hidden;font-family:'Rajdhani',sans-ser
 .hist-arrow{color:rgba(255,255,255,0.3);flex-shrink:0;}
 .hist-date{font-family:'Rajdhani',sans-serif;color:rgba(255,255,255,0.75);font-size:.88rem;flex:1;}
 .hist-net,.hist-round-net{font-family:'Rajdhani',sans-serif;font-weight:700;font-size:.9rem;flex-shrink:0;}
-.hist-pos{color:#4caf50;}.hist-neg{color:#ef5350;}
+.hist-pos{color:#4caf50;font-weight:700;}.hist-neg{color:#ef5350;font-weight:700;}
 .hist-day-rounds{padding:0 0 8px 20px;}
 .hist-round-row{margin:6px 0;padding:10px 14px;background:rgba(255,255,255,0.04);border-radius:10px;border:1px solid rgba(255,255,255,0.07);cursor:pointer;transition:background .15s;}
 .hist-round-row:hover{background:rgba(255,255,255,0.08);}
@@ -336,7 +353,8 @@ html,body{width:100%;height:100%;overflow:hidden;font-family:'Rajdhani',sans-ser
 .hist-round-sub{font-family:'Rajdhani',sans-serif;color:rgba(255,255,255,0.4);font-size:.75rem;margin-top:3px;}
 .hist-detail-back-row{padding:12px 20px 4px;}
 .hist-detail-meta{padding:10px 20px;background:rgba(255,255,255,0.03);font-family:'Rajdhani',sans-serif;font-size:.82rem;color:rgba(255,255,255,0.6);line-height:1.8;border-bottom:1px solid rgba(255,255,255,0.06);}
-.hd-dealer-row{padding:12px 20px;border-bottom:1px solid rgba(255,255,255,0.06);}
+.hd-dealer-row{padding:12px 20px;border-bottom:1px solid rgba(255,255,255,0.06);text-align:center;}
+.hd-cards-centered{justify-content:center;}
 .hd-section-label{font-family:'Rajdhani',sans-serif;font-size:.72rem;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:rgba(255,255,255,0.35);display:block;margin-bottom:6px;}
 .hd-cards-row{display:flex;flex-wrap:wrap;gap:4px;align-items:flex-end;margin:6px 0;}
 .hd-card-img{display:inline-flex;align-items:center;justify-content:center;width:34px;height:48px;background:#fff;border-radius:4px;font-family:'Rajdhani',sans-serif;font-weight:800;font-size:.85rem;flex-direction:column;gap:0;box-shadow:0 2px 6px rgba(0,0,0,0.4);border:1px solid rgba(0,0,0,0.12);color:#111;flex-shrink:0;}
@@ -347,7 +365,7 @@ html,body{width:100%;height:100%;overflow:hidden;font-family:'Rajdhani',sans-ser
 .hd-seat{background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:12px 14px;}
 .hd-seat-label{font-family:'Rajdhani',sans-serif;font-weight:700;font-size:.75rem;letter-spacing:.1em;text-transform:uppercase;color:rgba(255,255,255,0.4);margin-bottom:8px;}
 .hd-hand{margin-bottom:8px;}
-.hd-result{font-family:'Rajdhani',sans-serif;font-weight:700;font-size:.75rem;text-transform:uppercase;margin-top:4px;}
+.hd-result{font-family:'Rajdhani',sans-serif;font-weight:700;font-size:.8rem;text-transform:uppercase;margin-top:5px;letter-spacing:.06em;}
 .res-win{color:#4caf50;}.res-push{color:#ff9800;}.res-lose{color:#ef5350;}
 .hd-bets-table{margin-top:8px;}
 .hd-bet-line{display:flex;justify-content:space-between;font-family:'Rajdhani',sans-serif;font-size:.8rem;color:rgba(255,255,255,0.7);padding:3px 0;border-bottom:1px solid rgba(255,255,255,0.05);}
