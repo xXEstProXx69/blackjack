@@ -6,44 +6,176 @@
 <title>Kikikov BlackJack</title>
 <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700&family=Rajdhani:wght@400;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="lobby.css">
 </head>
 <body>
 
 <!-- ══════════════════════════════════════════
+     LOADING SCREEN
+══════════════════════════════════════════ -->
+<div id="loading-screen">
+  <div class="loading-suits">♠ ♥ ♦ ♣</div>
+  <div class="loading-logo">KIKIKOV</div>
+  <div class="loading-chips">
+    <div class="loading-chip"></div>
+    <div class="loading-chip"></div>
+    <div class="loading-chip"></div>
+    <div class="loading-chip"></div>
+    <div class="loading-chip"></div>
+  </div>
+  <div class="loading-bar-wrap"><div class="loading-bar"></div></div>
+  <div class="loading-sub">Loading table…</div>
+</div>
+
+<!-- ══════════════════════════════════════════
      LOBBY SCREEN
 ══════════════════════════════════════════ -->
-<div id="lobby-screen">
-  <div id="lobby-card">
-    <div id="lobby-logo">♠</div>
-    <h1 id="lobby-title">Kikikov BlackJack</h1>
-    <p id="lobby-sub">Multiplayer · Live Table</p>
+<div id="lobby-screen" class="hidden">
+  <!-- Header -->
+  <div id="lobby-header">
+    <div id="lobby-header-logo">
+      <span id="lobby-header-suits">♠♥♦♣</span>
+      <span id="lobby-header-title">Kikikov BlackJack</span>
+    </div>
+    <div id="lobby-header-name-pill" id="lobby-name-pill-btn">
+      <span id="lobby-header-avatar">👤</span>
+      <span id="lobby-header-name-display">Set your name</span>
+    </div>
+  </div>
 
+  <!-- Hero -->
+  <div id="lobby-hero">
+    <div id="lobby-hero-title">BLACK JACK</div>
+    <div id="lobby-hero-sub">Multiplayer · Live Table · 6 Deck Shoe</div>
+  </div>
+
+  <!-- Name input row -->
+  <div id="lobby-name-row">
     <input id="lobby-name" type="text" placeholder="Your name…" maxlength="18" autocomplete="off" spellcheck="false">
+  </div>
 
-    <div id="lobby-btns">
-      <button id="btn-create-room" class="lobby-btn lobby-btn-primary">Create Room</button>
-      <div id="lobby-divider"><span>or</span></div>
-      <div id="lobby-join-row">
-        <input id="lobby-code-input" type="text" placeholder="Room code…" maxlength="4" autocomplete="off" spellcheck="false">
-        <button id="btn-join-room" class="lobby-btn lobby-btn-secondary">Join</button>
+  <!-- Action buttons -->
+  <div id="lobby-actions">
+    <button class="lobby-action-btn" id="btn-lobby-create">
+      <span class="btn-icon">🎰</span>
+      <span>Create Room</span>
+    </button>
+    <button class="lobby-action-btn" id="btn-lobby-public">
+      <span class="btn-icon">🌐</span>
+      <span>Public Rooms</span>
+    </button>
+    <button class="lobby-action-btn" id="btn-lobby-private">
+      <span class="btn-icon">🔑</span>
+      <span>Join Private</span>
+    </button>
+  </div>
+
+  <div id="lobby-error"></div>
+
+  <!-- Create Room Panel -->
+  <div class="lobby-panel" id="lobby-create-panel">
+    <div class="lobby-panel-header">
+      <span class="lobby-panel-title">Create Room</span>
+      <button class="lobby-panel-close" data-close="lobby-create-panel">✕</button>
+    </div>
+    <div class="create-form">
+      <div class="create-form-row">
+        <div class="create-form-field">
+          <label>Room Type</label>
+          <div class="room-type-toggle">
+            <button class="room-type-btn active" data-type="public">🌐 Public</button>
+            <button class="room-type-btn" data-type="private">🔒 Private</button>
+          </div>
+        </div>
+        <div class="create-form-field">
+          <label>Room Name</label>
+          <input type="text" id="create-room-name" placeholder="My Table…" maxlength="32">
+        </div>
+      </div>
+      <div class="create-form-row">
+        <div class="create-form-field">
+          <label>Password (optional)</label>
+          <input type="password" id="create-room-password" placeholder="Leave blank for none…">
+        </div>
+        <div class="create-form-field">
+          <label>Starting Balance (€)</label>
+          <input type="number" id="create-room-balance" value="5000" min="100" max="1000000" step="100">
+        </div>
+      </div>
+      <button id="btn-create-confirm">🎰 Create &amp; Enter</button>
+    </div>
+  </div>
+
+  <!-- Join Private Panel -->
+  <div class="lobby-panel" id="lobby-private-panel">
+    <div class="lobby-panel-header">
+      <span class="lobby-panel-title">Join Private Room</span>
+      <button class="lobby-panel-close" data-close="lobby-private-panel">✕</button>
+    </div>
+    <div class="join-form">
+      <div class="create-form-field">
+        <label>Room Code</label>
+        <input type="text" id="lobby-code-input" placeholder="e.g. K7P2QX" maxlength="6" autocomplete="off" spellcheck="false" style="text-transform:uppercase;">
+      </div>
+      <div class="create-form-field">
+        <label>Password (if needed)</label>
+        <input type="password" id="lobby-private-pw" placeholder="Optional…">
+      </div>
+      <button id="btn-join-private-confirm">Join →</button>
+    </div>
+  </div>
+
+  <!-- Public Rooms Panel -->
+  <div class="lobby-panel" id="lobby-public-panel">
+    <div class="lobby-panel-header">
+      <span class="lobby-panel-title">Public Rooms</span>
+      <div style="display:flex;gap:8px;align-items:center;">
+        <button class="rooms-refresh" id="btn-rooms-refresh">↻ Refresh</button>
+        <button class="lobby-panel-close" data-close="lobby-public-panel">✕</button>
       </div>
     </div>
-    <div id="lobby-error" class="hidden"></div>
+    <div class="rooms-toolbar">
+      <input class="rooms-search" id="rooms-search" placeholder="Search by name or host…">
+      <select class="rooms-sort" id="rooms-sort">
+        <option value="seats">Most Seats Open</option>
+        <option value="players">Most Players</option>
+        <option value="balance">Highest Balance</option>
+        <option value="name">Name A-Z</option>
+      </select>
+    </div>
+    <div class="rooms-list" id="rooms-list">
+      <div class="rooms-empty">Loading rooms…</div>
+    </div>
+  </div>
+</div>
+
+<!-- Password prompt modal -->
+<div id="lobby-pw-modal">
+  <div id="lobby-pw-card">
+    <div id="lobby-pw-title">🔒 Password Required</div>
+    <input type="password" id="lobby-pw-input" placeholder="Enter room password…">
+    <div id="lobby-pw-error" style="color:#ef5350;font-family:Rajdhani,sans-serif;font-size:.8rem;min-height:18px;"></div>
+    <div class="pw-btns">
+      <button id="btn-pw-confirm">Enter Room</button>
+      <button id="btn-pw-cancel">Cancel</button>
+    </div>
   </div>
 </div>
 
 <!-- ══════════════════════════════════════════
-     WAITING ROOM (after create, before enough players)
+     WAITING ROOM
 ══════════════════════════════════════════ -->
 <div id="waiting-screen" class="hidden">
   <div id="waiting-card">
     <div id="waiting-logo">♠</div>
+    <div id="waiting-room-name"></div>
     <p id="waiting-label">ROOM CODE</p>
-    <div id="waiting-code">----</div>
-    <p id="waiting-hint">Share this code with friends to join</p>
+    <div id="waiting-code">------</div>
+    <p id="waiting-code-label">Share with friends</p>
+    <p id="waiting-hint">Waiting for players…</p>
     <div id="waiting-players"></div>
-    <button id="btn-start-game" class="lobby-btn lobby-btn-primary">Start Game</button>
-    <button id="btn-leave-room" class="lobby-btn lobby-btn-ghost">Leave</button>
+    <button id="btn-start-game" style="display:none">Start Game</button>
+    <button id="btn-leave-room">Leave Room</button>
   </div>
 </div>
 
@@ -72,7 +204,7 @@
   <div id="settings-modal" class="hidden">
     <div id="settings-card">
       <h2 id="settings-title">⚙ Settings</h2>
-      <div id="settings-version">v0.03</div>
+      <div id="settings-version">v0.33</div>
       <div class="setting-row">
         <label>Display Name</label>
         <div class="setting-control setting-name-row">
@@ -102,6 +234,16 @@
         <span>Stand if score &lt;</span>
         <input type="number" id="autoplay-threshold" value="17" min="12" max="21">
         <span>(else hit)</span>
+      </div>
+      <div class="setting-row" id="bet-timer-row">
+        <label>Bet Timer</label>
+        <div class="setting-control">
+          <div class="autoplay-toggle">
+            <div class="autoplay-toggle-btn on" id="bet-timer-toggle">
+              <span class="autoplay-icon"></span>
+            </div>
+          </div>
+        </div>
       </div>
       <button id="settings-close">Done</button>
     </div>
@@ -155,13 +297,13 @@
     </div>
     <div id="dealer-area">
       <div id="dealer-hand"></div>
-      <div class="score-display hidden" id="dealer-score">0</div>
+      <div class="score-display hidden" id="dealer-score"><span class="bust-num"></span><span class="bust-icon">💥</span></div>
     </div>
     <div id="seats-container">
       <!-- SEAT 1 -->
       <div class="seat" id="seat-1" data-seat="1">
         <div class="player-hand" id="hand-1"></div>
-        <div class="score-display hidden" id="score-1">0</div>
+        <div class="score-display hidden" id="score-1"><span class="bust-num"></span><span class="bust-icon">💥</span></div>
         <div class="betting-circles">
           <div class="bet-circle side-bet pp" data-seat="1" data-type="pp"><span class="bet-label">PP</span><span class="bet-amount"></span></div>
           <div class="bet-circle main-bet" data-seat="1" data-type="main">
@@ -171,12 +313,13 @@
           <div class="bet-circle side-bet sp" data-seat="1" data-type="sp"><span class="bet-label">21+3</span><span class="bet-amount"></span></div>
         </div>
         <div class="seat-name-tag hidden"></div>
+        <div class="seat-bottom-ind hidden" id="sind-1"></div>
         <button class="leave-seat-btn hidden" title="Leave seat">✕</button>
       </div>
       <!-- SEAT 2 -->
       <div class="seat" id="seat-2" data-seat="2">
         <div class="player-hand" id="hand-2"></div>
-        <div class="score-display hidden" id="score-2">0</div>
+        <div class="score-display hidden" id="score-2"><span class="bust-num"></span><span class="bust-icon">💥</span></div>
         <div class="betting-circles">
           <div class="bet-circle side-bet pp" data-seat="2" data-type="pp"><span class="bet-label">PP</span><span class="bet-amount"></span></div>
           <div class="bet-circle main-bet" data-seat="2" data-type="main">
@@ -186,12 +329,13 @@
           <div class="bet-circle side-bet sp" data-seat="2" data-type="sp"><span class="bet-label">21+3</span><span class="bet-amount"></span></div>
         </div>
         <div class="seat-name-tag hidden"></div>
+        <div class="seat-bottom-ind hidden" id="sind-2"></div>
         <button class="leave-seat-btn hidden" title="Leave seat">✕</button>
       </div>
       <!-- SEAT 3 -->
       <div class="seat" id="seat-3" data-seat="3">
         <div class="player-hand" id="hand-3"></div>
-        <div class="score-display hidden" id="score-3">0</div>
+        <div class="score-display hidden" id="score-3"><span class="bust-num"></span><span class="bust-icon">💥</span></div>
         <div class="betting-circles">
           <div class="bet-circle side-bet pp" data-seat="3" data-type="pp"><span class="bet-label">PP</span><span class="bet-amount"></span></div>
           <div class="bet-circle main-bet" data-seat="3" data-type="main">
@@ -201,12 +345,13 @@
           <div class="bet-circle side-bet sp" data-seat="3" data-type="sp"><span class="bet-label">21+3</span><span class="bet-amount"></span></div>
         </div>
         <div class="seat-name-tag hidden"></div>
+        <div class="seat-bottom-ind hidden" id="sind-3"></div>
         <button class="leave-seat-btn hidden" title="Leave seat">✕</button>
       </div>
       <!-- SEAT 4 -->
       <div class="seat" id="seat-4" data-seat="4">
         <div class="player-hand" id="hand-4"></div>
-        <div class="score-display hidden" id="score-4">0</div>
+        <div class="score-display hidden" id="score-4"><span class="bust-num"></span><span class="bust-icon">💥</span></div>
         <div class="betting-circles">
           <div class="bet-circle side-bet pp" data-seat="4" data-type="pp"><span class="bet-label">PP</span><span class="bet-amount"></span></div>
           <div class="bet-circle main-bet" data-seat="4" data-type="main">
@@ -216,12 +361,13 @@
           <div class="bet-circle side-bet sp" data-seat="4" data-type="sp"><span class="bet-label">21+3</span><span class="bet-amount"></span></div>
         </div>
         <div class="seat-name-tag hidden"></div>
+        <div class="seat-bottom-ind hidden" id="sind-4"></div>
         <button class="leave-seat-btn hidden" title="Leave seat">✕</button>
       </div>
       <!-- SEAT 5 -->
       <div class="seat" id="seat-5" data-seat="5">
         <div class="player-hand" id="hand-5"></div>
-        <div class="score-display hidden" id="score-5">0</div>
+        <div class="score-display hidden" id="score-5"><span class="bust-num"></span><span class="bust-icon">💥</span></div>
         <div class="betting-circles">
           <div class="bet-circle side-bet pp" data-seat="5" data-type="pp"><span class="bet-label">PP</span><span class="bet-amount"></span></div>
           <div class="bet-circle main-bet" data-seat="5" data-type="main">
@@ -231,6 +377,7 @@
           <div class="bet-circle side-bet sp" data-seat="5" data-type="sp"><span class="bet-label">21+3</span><span class="bet-amount"></span></div>
         </div>
         <div class="seat-name-tag hidden"></div>
+        <div class="seat-bottom-ind hidden" id="sind-5"></div>
         <button class="leave-seat-btn hidden" title="Leave seat">✕</button>
       </div>
     </div>
@@ -249,19 +396,19 @@
 
   <div id="chip-tray" class="hidden">
     <div id="chips">
-      <div class="chip chip-1"   data-value="1">€1</div>
-      <div class="chip chip-2"   data-value="2">€2</div>
-      <div class="chip chip-5"   data-value="5">€5</div>
-      <div class="chip chip-10"  data-value="10">€10</div>
-      <div class="chip chip-25"  data-value="25">€25</div>
-      <div class="chip chip-50"  data-value="50">€50</div>
-      <div class="chip chip-100" data-value="100">€100</div>
-      <div class="chip chip-200" data-value="200">€200</div>
-      <div class="chip chip-500" data-value="500">€500</div>
-      <div class="chip chip-1k"  data-value="1000">€1k</div>
-      <div class="chip chip-2k"  data-value="2000">€2k</div>
-      <div class="chip chip-5k"  data-value="5000">€5k</div>
-      <div class="chip chip-10k" data-value="10000">€10k</div>
+      <div class="chip chip-1"   data-value="1">1</div>
+      <div class="chip chip-2"   data-value="2">2</div>
+      <div class="chip chip-5"   data-value="5">5</div>
+      <div class="chip chip-10"  data-value="10">10</div>
+      <div class="chip chip-25"  data-value="25">25</div>
+      <div class="chip chip-50"  data-value="50">50</div>
+      <div class="chip chip-100" data-value="100">100</div>
+      <div class="chip chip-200" data-value="200">200</div>
+      <div class="chip chip-500" data-value="500">500</div>
+      <div class="chip chip-1k"  data-value="1000">1k</div>
+      <div class="chip chip-2k"  data-value="2000">2k</div>
+      <div class="chip chip-5k"  data-value="5000">5k</div>
+      <div class="chip chip-10k" data-value="10000">10k</div>
     </div>
   </div>
 
@@ -280,11 +427,9 @@
     </button>
     <button id="btn-split" class="action-cubic action-split hidden">
       <span class="cubic-icon">
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
-          <rect x="2" y="4" width="8" height="12" rx="2"/>
-          <rect x="14" y="4" width="8" height="12" rx="2"/>
-          <path d="M10 10 H14"/>
-          <path d="M8 16 L4 20 M16 16 L20 20"/>
+        <svg width="28" height="20" viewBox="0 0 28 20" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="10,4 2,10 10,16"/>
+          <polyline points="18,4 26,10 18,16"/>
         </svg>
       </span>
       <span class="cubic-label">SPLIT</span>
@@ -299,7 +444,15 @@
     </button>
   </div>
 
-  <div id="insurance-modal" class="hidden">
+  <div id="action-timer-wrap" class="hidden">
+    <svg id="action-timer-svg" width="54" height="54" viewBox="0 0 54 54">
+      <circle id="action-timer-track" cx="27" cy="27" r="22" fill="rgba(0,0,0,0.45)" stroke="rgba(255,255,255,0.1)" stroke-width="3"/>
+      <circle id="action-timer-fill" cx="27" cy="27" r="22" fill="none" stroke="#4caf50" stroke-width="3.5"
+        stroke-linecap="round" stroke-dasharray="138.23" stroke-dashoffset="0"
+        transform="rotate(-90 27 27)"/>
+    </svg>
+    <span id="action-timer-num">15</span>
+  </div>
     <div id="insurance-title">🃏 Dealer Shows an Ace</div>
     <div id="insurance-subtitle">Insurance pays 2:1 — costs half your main bet</div>
     <div id="insurance-seats"></div>
@@ -320,6 +473,7 @@
 </div>
 
 <script src="/socket.io/socket.io.js"></script>
-<script src="client.js"></script>
+<script src="game.js"></script>
+<script src="ui.js"></script>
 </body>
 </html>
