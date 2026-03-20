@@ -251,16 +251,20 @@ function advanceInsuranceQueue(code) {
     return;
   }
   const { sid, ownerId } = gs.insuranceQueue[gs.insuranceQueueIndex];
+  const cost = Math.floor((gs.bets[sid]?.main || 0) / 2);
+  const owner = room.players[ownerId];
+  // If player can't afford insurance, skip them automatically
+  if (!owner || owner.wallet < cost) {
+    gs.insuranceQueueIndex++;
+    advanceInsuranceQueue(code);
+    return;
+  }
   gs.insuranceCurrentSid = sid;
   broadcast(code);
-  // Emit to the owner of this seat
-  io.to(ownerId).emit('insuranceOfferSeat', {
-    sid,
-    cost: Math.floor((gs.bets[sid]?.main || 0) / 2),
-  });
+  io.to(ownerId).emit('insuranceOfferSeat', { sid, cost });
 }
 
-function checkBJ(code) {
+async function checkBJ(code) {
   const room = rooms[code];
   const { gs, players } = room;
 
@@ -271,6 +275,11 @@ function checkBJ(code) {
   const dBJ = score(gs.hands.dealer) === 21 && gs.hands.dealer.length === 2;
 
   if (dBJ && upCard && upCard.value === 'A') {
+    // Reveal dealer hole card so players see the BJ before resolution
+    gs.dealerRevealed = true;
+    broadcast(code);
+    // Small pause so the flip animation plays
+    await delay(1400);
     for (const sid of gs.activeSeats) {
       const ins = gs.insurance[sid] || 0;
       if (ins > 0) {
