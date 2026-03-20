@@ -251,13 +251,17 @@ function advanceInsuranceQueue(code) {
     return;
   }
   const { sid, ownerId } = gs.insuranceQueue[gs.insuranceQueueIndex];
+  const cost = Math.floor((gs.bets[sid]?.main || 0) / 2);
+  const owner = room.players[ownerId];
+  // If player can't afford insurance, skip them automatically
+  if (!owner || owner.wallet < cost) {
+    gs.insuranceQueueIndex++;
+    advanceInsuranceQueue(code);
+    return;
+  }
   gs.insuranceCurrentSid = sid;
   broadcast(code);
-  // Emit to the owner of this seat
-  io.to(ownerId).emit('insuranceOfferSeat', {
-    sid,
-    cost: Math.floor((gs.bets[sid]?.main || 0) / 2),
-  });
+  io.to(ownerId).emit('insuranceOfferSeat', { sid, cost });
 }
 
 function checkBJ(code) {
