@@ -7,22 +7,114 @@ let activeTurnSid=null,activeTurnHandIdx=0,prevGs=null,winOverlayShown=false;
 let actionPending=false,sfxVolume=0.4,currentRoundLog=null;
 let countdownRafId=null,countdownStart=0,countdownTotal=15000;
 let autoplayOn=false,autoplayThreshold=17,bjSoundedSeats=new Set(),shownSideBetPills=new Set();
+let betTimerEnabled=true; // toggled by host
+let _isHost=false; // whether this client is the room host
+let _pendingCountdownSid=null,_countdownGen=0;
 const _prevScores={};
 const _scoreOverride={}; // pillId → {text, locked} — persists until real value arrives
-const CHIP_COLORS={1:'#e8e8e8,#b0b0b0',2:'#d0d0d0,#888',5:'#e03030,#900',10:'#1a7ad4,#0a4a9a',25:'#2da84e,#155a28',50:'#c07020,#804010',100:'#222,#111',200:'#b050f0,#6000b0',500:'#8030a0,#400060',1000:'#e0b000,#a07000',2000:'#e07030,#c03000',5000:'#10b0b0,#006060',10000:'#f050a0,#900040'};
+const CHIP_COLORS={1:'#ffe050,#c8a000',2:'#5090f0,#1a50c8',5:'#e83030,#9a0808',10:'#40d8f8,#0898c0',25:'#80e040,#3a9000',50:'#f08020,#b04000',100:'#282828,#080808',200:'#f060b0,#b01868',500:'#9050d0,#4a0890',1000:'#2858c8,#0a2880',2000:'#182898,#080850',5000:'#b01820,#680008',10000:'#187028,#083810'};
+function bestChip(preferred){
+  // If wallet can cover preferred, use it; otherwise find largest chip <= wallet
+  const DENOMS=[10000,5000,2000,1000,500,200,100,50,25,10,5,2,1];
+  if(myWallet>=preferred)return preferred;
+  for(const d of DENOMS){if(myWallet>=d)return d;}
+  return 0; // broke
+}
 const AudioCtx=window.AudioContext||window.webkitAudioContext;let actx=null;
-function getACtx(){if(!actx)actx=new AudioCtx();return actx;}
-function playTone(f,d,t='sine',v=sfxVolume){if(!v)return;try{const ctx=getACtx(),o=ctx.createOscillator(),g=ctx.createGain();o.connect(g);g.connect(ctx.destination);o.type=t;o.frequency.value=f;g.gain.setValueAtTime(v*0.3,ctx.currentTime);g.gain.exponentialRampToValueAtTime(0.0001,ctx.currentTime+d);o.start();o.stop(ctx.currentTime+d);}catch(e){}}
-function sfxChip(){playTone(900,0.06,'square',sfxVolume*0.5);}
-function sfxCard(){try{const ctx=getACtx(),buf=ctx.createBuffer(1,ctx.sampleRate*0.08,ctx.sampleRate);const d=buf.getChannelData(0);for(let i=0;i<d.length;i++)d[i]=(Math.random()*2-1)*Math.exp(-i/(d.length*0.3));const s=ctx.createBufferSource(),f=ctx.createBiquadFilter(),g=ctx.createGain();f.type='bandpass';f.frequency.value=3800;f.Q.value=0.8;s.buffer=buf;s.connect(f);f.connect(g);g.connect(ctx.destination);g.gain.setValueAtTime(sfxVolume*0.6,ctx.currentTime);g.gain.exponentialRampToValueAtTime(0.0001,ctx.currentTime+0.08);s.start();}catch(e){playTone(300,0.08,'triangle');}}
-function sfxWin(){[600,800,1000].forEach((f,i)=>setTimeout(()=>playTone(f,0.18,'sine'),i*80));}
-function sfxBust(){[200,160,120].forEach((f,i)=>setTimeout(()=>playTone(f,0.15,'sawtooth'),i*60));}
-function sfxDeal(){playTone(440,0.1,'triangle');}
-function sfxClick(){playTone(600,0.04,'square',sfxVolume*0.4);}
+function getACtx(){if(!actx){actx=new AudioCtx();}if(actx.state==='suspended')actx.resume();return actx;}
+
+// ── CARD DEAL: papery swish — bandpass filtered noise ──
+function sfxCard(){try{
+  const ctx=getACtx(),sr=ctx.sampleRate,len=Math.floor(sr*0.07);
+  const buf=ctx.createBuffer(1,len,sr),d=buf.getChannelData(0);
+  for(let i=0;i<len;i++)d[i]=(Math.random()*2-1)*Math.pow(1-i/len,2.5);
+  const src=ctx.createBufferSource();
+  const bp=ctx.createBiquadFilter();bp.type='bandpass';bp.frequency.value=4200;bp.Q.value=1.2;
+  const hp=ctx.createBiquadFilter();hp.type='highpass';hp.frequency.value=1800;
+  const g=ctx.createGain();g.gain.setValueAtTime(sfxVolume*0.55,ctx.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.0001,ctx.currentTime+0.07);
+  src.buffer=buf;src.connect(hp);hp.connect(bp);bp.connect(g);g.connect(ctx.destination);src.start();
+}catch(e){}}
+
+// ── CARD FLIP: sharp click + quick pitch snap ──
+function sfxFlip(){try{
+  const ctx=getACtx(),now=ctx.currentTime;
+  // Click transient
+  const buf=ctx.createBuffer(1,Math.floor(ctx.sampleRate*0.015),ctx.sampleRate);
+  const d=buf.getChannelData(0);for(let i=0;i<d.length;i++)d[i]=(Math.random()*2-1)*Math.exp(-i/(d.length*0.4));
+  const src=ctx.createBufferSource();src.buffer=buf;
+  const g=ctx.createGain();g.gain.setValueAtTime(sfxVolume*0.7,now);g.gain.exponentialRampToValueAtTime(0.0001,now+0.015);
+  src.connect(g);g.connect(ctx.destination);src.start();
+  // Snap tone
+  const o=ctx.createOscillator(),og=ctx.createGain();
+  o.type='triangle';o.frequency.setValueAtTime(320,now+0.005);
+  o.frequency.exponentialRampToValueAtTime(120,now+0.06);
+  og.gain.setValueAtTime(sfxVolume*0.18,now+0.005);og.gain.exponentialRampToValueAtTime(0.0001,now+0.07);
+  o.connect(og);og.connect(ctx.destination);o.start(now+0.005);o.stop(now+0.07);
+}catch(e){}}
+
+// ── HIT: two quick felt thumps (knuckles on table) ──
+function sfxHit(){try{
+  const ctx=getACtx();
+  const mkThump=(t)=>{
+    const buf=ctx.createBuffer(1,Math.floor(ctx.sampleRate*0.04),ctx.sampleRate);
+    const d=buf.getChannelData(0);for(let i=0;i<d.length;i++)d[i]=(Math.random()*2-1)*Math.exp(-i/(d.length*0.25));
+    const src=ctx.createBufferSource();src.buffer=buf;
+    const lp=ctx.createBiquadFilter();lp.type='lowpass';lp.frequency.value=280;
+    const g=ctx.createGain();g.gain.setValueAtTime(sfxVolume*0.45,t);g.gain.exponentialRampToValueAtTime(0.0001,t+0.04);
+    src.connect(lp);lp.connect(g);g.connect(ctx.destination);src.start(t);
+  };
+  mkThump(ctx.currentTime);mkThump(ctx.currentTime+0.09);
+}catch(e){}}
+
+// ── STAND: soft air whoosh ──
+function sfxStand(){try{
+  const ctx=getACtx(),sr=ctx.sampleRate,len=Math.floor(sr*0.18),now=ctx.currentTime;
+  const buf=ctx.createBuffer(1,len,sr),d=buf.getChannelData(0);
+  for(let i=0;i<len;i++)d[i]=(Math.random()*2-1)*Math.sin(i/len*Math.PI);
+  const src=ctx.createBufferSource();src.buffer=buf;
+  const bp=ctx.createBiquadFilter();bp.type='bandpass';bp.frequency.value=800;bp.Q.value=0.5;
+  const g=ctx.createGain();g.gain.setValueAtTime(0.0001,now);g.gain.linearRampToValueAtTime(sfxVolume*0.18,now+0.04);
+  g.gain.exponentialRampToValueAtTime(0.0001,now+0.18);
+  src.connect(bp);bp.connect(g);g.connect(ctx.destination);src.start(now);
+}catch(e){}}
+
+// ── WIN: two soft rising chimes ──
+function sfxWin(){try{
+  const ctx=getACtx(),now=ctx.currentTime;
+  [[660,0],[880,0.12]].forEach(([f,dt])=>{
+    const o=ctx.createOscillator(),g=ctx.createGain();
+    o.type='sine';o.frequency.value=f;
+    g.gain.setValueAtTime(sfxVolume*0.22,now+dt);g.gain.exponentialRampToValueAtTime(0.0001,now+dt+0.25);
+    o.connect(g);g.connect(ctx.destination);o.start(now+dt);o.stop(now+dt+0.25);
+  });
+}catch(e){}}
+
+// ── BUST: short descending thud ──
+function sfxBust(){try{
+  const ctx=getACtx(),now=ctx.currentTime;
+  const o=ctx.createOscillator(),g=ctx.createGain();
+  o.type='triangle';o.frequency.setValueAtTime(220,now);o.frequency.exponentialRampToValueAtTime(60,now+0.2);
+  g.gain.setValueAtTime(sfxVolume*0.3,now);g.gain.exponentialRampToValueAtTime(0.0001,now+0.2);
+  o.connect(g);g.connect(ctx.destination);o.start(now);o.stop(now+0.2);
+}catch(e){}}
+
+// ── CHIP PLACE: silent (no generic click sounds) ──
+function sfxChip(){}
+function sfxClick(){}
+function sfxDeal(){}
 const $=id=>document.getElementById(id);
 const show=id=>$(id)?.classList.remove('hidden');
 const hide=id=>$(id)?.classList.add('hidden');
-function fmt(n){return n>=1000?'\u20ac'+(n/1000).toFixed(n%1000===0?0:1)+'k':'\u20ac'+n;}
+function fmt(n){return n>=1000?(n/1000).toFixed(n%1000===0?0:1)+'k':String(n);}
+function isNaturalBJ(h){
+  // True BJ = exactly 2 cards, one Ace, one 10-value, NOT from a split
+  if(!Array.isArray(h)||h.length!==2)return false;
+  const vals=h.map(c=>c.value);
+  const hasAce=vals.includes('A');
+  const hasTen=vals.some(v=>['10','J','Q','K'].includes(v));
+  return hasAce&&hasTen;
+}
 function score(h){if(!Array.isArray(h)||!h.length)return 0;let t=0,a=0;for(const c of h){if(['J','Q','K'].includes(c.value))t+=10;else if(c.value==='A'){a++;t+=11;}else t+=parseInt(c.value)||0;}while(t>21&&a>0){t-=10;a--;}return t;}
 function scoreLabel(h,stood){if(!Array.isArray(h)||!h.length)return'';let t=0,a=0;for(const c of h){if(['J','Q','K'].includes(c.value))t+=10;else if(c.value==='A'){a++;t+=11;}else t+=parseInt(c.value)||0;}while(t>21&&a>0){t-=10;a--;}if(a>0&&t!==21&&!stood)return`${t-10}/${t}`;return String(t);}
 function cardNum(c){if(['J','Q','K'].includes(c.value))return 10;if(c.value==='A')return 11;return parseInt(c.value);}
@@ -35,49 +127,267 @@ function loadToken(){try{let t=localStorage.getItem('kk_token');if(!t){t=Math.ra
 const myToken=loadToken();
 function saveHistory(h){try{localStorage.setItem('kk_history',JSON.stringify(h));}catch(e){}}
 function pushRound(e){const h=loadHistory();h.unshift(e);if(h.length>500)h.length=500;saveHistory(h);}
-(function(){const s=loadName();if(s){const i=$('lobby-name');if(i)i.value=s;}})();
+// ── Pre-fill saved name ─────────────────────────────────────────
+(function(){
+  const s=loadName();
+  if(s){const i=$('lobby-name');if(i)i.value=s;const d=$('lobby-header-name-display');if(d)d.textContent=s;}
+})();
 
-// ── Lobby ──────────────────────────────────────────────────────
-$('btn-create-room').addEventListener('click',()=>{const name=$('lobby-name').value.trim();if(!name){showLobbyError('Enter your name first');return;}myName=name;saveName(name);socket.emit('createRoom',{name,wallet:5000,token:myToken});});
-$('btn-join-room').addEventListener('click',()=>{const name=$('lobby-name').value.trim();const code=$('lobby-code-input').value.trim().toUpperCase();if(!name){showLobbyError('Enter your name first');return;}if(code.length!==4){showLobbyError('Enter a 4-digit room code');return;}myName=name;saveName(name);socket.emit('joinRoom',{code,name,wallet:5000,token:myToken});});
-$('lobby-code-input').addEventListener('keydown',e=>{if(e.key==='Enter')$('btn-join-room').click();});
-$('lobby-name').addEventListener('keydown',e=>{if(e.key==='Enter')$('btn-create-room').click();});
-$('btn-start-game').addEventListener('click',()=>{sfxClick();socket.emit('startGame');});
-$('btn-leave-room').addEventListener('click',()=>showLeaveConfirm());
-function showLobbyError(msg){const el=$('lobby-error');el.textContent=msg;el.classList.remove('hidden');setTimeout(()=>el.classList.add('hidden'),3000);}
-function showLeaveConfirm(){showConfirmModal('Leave Room?','You\'ll lose your seat and any bets.','Leave','#ef5350',()=>{socket.disconnect();location.reload();});}
-function showConfirmModal(title,sub,confirmLabel,confirmColor,onConfirm){if($('confirm-modal'))return;const m=document.createElement('div');m.id='confirm-modal';m.innerHTML=`<div class="confirm-card"><div class="confirm-title">${title}</div><div class="confirm-sub">${sub}</div><div class="confirm-btns"><button class="confirm-btn-yes" style="background:${confirmColor}">${confirmLabel}</button><button class="confirm-btn-no">Cancel</button></div></div>`;document.body.appendChild(m);m.querySelector('.confirm-btn-yes').addEventListener('click',()=>{m.remove();onConfirm();});m.querySelector('.confirm-btn-no').addEventListener('click',()=>m.remove());}
-function launchGame(){hide('waiting-screen');hide('lobby-screen');show('game-container');const ct=$('chip-tray');if(ct){ct.classList.remove('hidden');ct.classList.remove('tray-hidden');}}
+// ── Loading screen ───────────────────────────────────────────────
+// Show loading screen briefly, then reveal lobby when ready
+(function(){
+  const ls=$('loading-screen');
+  const lobby=$('lobby-screen');
+  // Wait for fonts + socket connection attempt, then transition
+  const showLobby=()=>{
+    if(ls){ls.classList.add('fade-out');setTimeout(()=>{ls.style.display='none';},500);}
+    if(lobby)lobby.classList.remove('hidden');
+  };
+  // Minimum 1.8s loading screen, then reveal
+  setTimeout(showLobby, 1800);
+})();
+
+// ── Helpers ─────────────────────────────────────────────────────
+function showLobbyError(msg){
+  const el=$('lobby-error');
+  if(!el)return;
+  el.textContent=msg;
+  el.style.opacity='1';
+  clearTimeout(el._t);
+  el._t=setTimeout(()=>{el.style.opacity='0';setTimeout(()=>el.textContent='',400);},3200);
+}
+
+function showLeaveConfirm(){
+  showConfirmModal('Leave Room?','You\'ll lose your seat and any bets.','Leave','#ef5350',()=>{socket.disconnect();location.reload();});
+}
+
+function showConfirmModal(title,sub,confirmLabel,confirmColor,onConfirm){
+  if($('confirm-modal'))return;
+  const m=document.createElement('div');m.id='confirm-modal';
+  m.innerHTML=`<div class="confirm-card"><div class="confirm-title">${title}</div><div class="confirm-sub">${sub}</div><div class="confirm-btns"><button class="confirm-btn-yes" style="background:${confirmColor}">${confirmLabel}</button><button class="confirm-btn-no">Cancel</button></div></div>`;
+  document.body.appendChild(m);
+  m.querySelector('.confirm-btn-yes').addEventListener('click',()=>{m.remove();onConfirm();});
+  m.querySelector('.confirm-btn-no').addEventListener('click',()=>m.remove());
+}
+
+function launchGame(){
+  hide('waiting-screen');hide('lobby-screen');
+  show('game-container');
+  const ct=$('chip-tray');
+  if(ct){ct.classList.remove('hidden');ct.classList.remove('tray-hidden');}
+}
+
+// ── Lobby panel toggle ───────────────────────────────────────────
+let _activePanel=null;
+function openPanel(id){
+  if(_activePanel&&_activePanel!==id)closePanel(_activePanel);
+  const p=$(id);if(p){p.classList.add('open');_activePanel=id;}
+  if(id==='lobby-public-panel')loadPublicRooms();
+}
+function closePanel(id){const p=$(id);if(p)p.classList.remove('open');if(_activePanel===id)_activePanel=null;}
+
+document.querySelectorAll('.lobby-panel-close').forEach(btn=>{
+  btn.addEventListener('click',()=>closePanel(btn.dataset.close));
+});
+
+// ── Room type toggle ─────────────────────────────────────────────
+let _roomType='public';
+document.querySelectorAll('.room-type-btn').forEach(btn=>{
+  btn.addEventListener('click',()=>{
+    document.querySelectorAll('.room-type-btn').forEach(b=>b.classList.remove('active'));
+    btn.classList.add('active');
+    _roomType=btn.dataset.type;
+  });
+});
+
+// ── Name input sync ─────────────────────────────────────────────
+$('lobby-name')?.addEventListener('input',()=>{
+  const v=$('lobby-name').value;
+  const d=$('lobby-header-name-display');
+  if(d)d.textContent=v||'Set your name';
+});
+
+// ── Action buttons ───────────────────────────────────────────────
+$('btn-lobby-create')?.addEventListener('click',()=>{
+  openPanel('lobby-create-panel');
+  closePanel('lobby-public-panel');closePanel('lobby-private-panel');
+});
+$('btn-lobby-public')?.addEventListener('click',()=>{
+  openPanel('lobby-public-panel');
+  closePanel('lobby-create-panel');closePanel('lobby-private-panel');
+});
+$('btn-lobby-private')?.addEventListener('click',()=>{
+  openPanel('lobby-private-panel');
+  closePanel('lobby-create-panel');closePanel('lobby-public-panel');
+});
+
+// ── Create Room ──────────────────────────────────────────────────
+$('btn-create-confirm')?.addEventListener('click',()=>{
+  const name=$('lobby-name').value.trim();
+  if(!name){showLobbyError('Enter your name first');return;}
+  const roomName=$('create-room-name').value.trim();
+  const password=$('create-room-password').value;
+  const balance=parseInt($('create-room-balance').value)||5000;
+  const isPublic=_roomType==='public';
+  myName=name;saveName(name);
+  socket.emit('createRoom',{name,token:myToken,roomName,isPublic,password,startingBalance:balance});
+});
+
+// ── Join Private ─────────────────────────────────────────────────
+$('btn-join-private-confirm')?.addEventListener('click',()=>doJoinPrivate());
+$('lobby-code-input')?.addEventListener('keydown',e=>{if(e.key==='Enter')doJoinPrivate();});
+
+function doJoinPrivate(){
+  const name=$('lobby-name').value.trim();
+  if(!name){showLobbyError('Enter your name first');return;}
+  const code=$('lobby-code-input').value.trim().toUpperCase();
+  if(code.length<4){showLobbyError('Enter a valid room code');return;}
+  const pw=$('lobby-private-pw').value;
+  myName=name;saveName(name);
+  socket.emit('joinRoom',{code,name,token:myToken,password:pw});
+}
+
+// ── Public Room List ─────────────────────────────────────────────
+let _pendingJoinCode=null;
+
+async function loadPublicRooms(){
+  const list=$('rooms-list');
+  if(list)list.innerHTML='<div class="rooms-empty">Loading…</div>';
+  try{
+    const r=await fetch('/api/rooms');
+    const rooms=await r.json();
+    renderRoomList(rooms);
+  }catch(e){
+    if(list)list.innerHTML='<div class="rooms-empty">Could not load rooms</div>';
+  }
+}
+
+function renderRoomList(rooms){
+  const list=$('rooms-list');if(!list)return;
+  const search=($('rooms-search')?.value||'').toLowerCase();
+  const sort=$('rooms-sort')?.value||'seats';
+  let filtered=rooms.filter(r=>{
+    if(search&&!r.name.toLowerCase().includes(search)&&!r.hostName.toLowerCase().includes(search))return false;
+    return true;
+  });
+  filtered.sort((a,b)=>{
+    if(sort==='seats')return b.seatsOpen-a.seatsOpen;
+    if(sort==='players')return b.players-a.players;
+    if(sort==='balance')return b.startingBalance-a.startingBalance;
+    if(sort==='name')return a.name.localeCompare(b.name);
+    return 0;
+  });
+  if(!filtered.length){list.innerHTML='<div class="rooms-empty">No public rooms found</div>';return;}
+  list.innerHTML='';
+  filtered.forEach(room=>{
+    const card=document.createElement('div');card.className='room-card';
+    const statusIcon=room.gameStatus==='betting'?'🟢':room.gameStatus==='game_over'?'🟡':'🔵';
+    const statusLabel=room.gameStatus==='betting'?'Betting':room.gameStatus==='game_over'?'Round ending':'In game';
+    card.innerHTML=`
+      <div class="room-card-icon">${statusIcon}</div>
+      <div class="room-card-info">
+        <div class="room-card-name">${room.name}</div>
+        <div class="room-card-meta">Host: ${room.hostName} · €${room.startingBalance.toLocaleString()} start · ${statusLabel}</div>
+      </div>
+      <div class="room-card-right">
+        <div class="room-card-seats">${room.seatsOpen}/${room.maxPlayers} open</div>
+        ${room.hasPassword?'<div class="room-card-lock">🔒</div>':''}
+        <button class="room-card-join" data-code="${room.code}" data-locked="${room.hasPassword}">Join</button>
+      </div>`;
+    list.appendChild(card);
+    card.querySelector('.room-card-join').addEventListener('click',e=>{
+      e.stopPropagation();
+      joinPublicRoom(room.code, room.hasPassword);
+    });
+    card.addEventListener('click',()=>joinPublicRoom(room.code, room.hasPassword));
+  });
+}
+
+function joinPublicRoom(code, hasPassword){
+  const name=$('lobby-name').value.trim();
+  if(!name){showLobbyError('Enter your name first');return;}
+  if(hasPassword){
+    _pendingJoinCode=code;
+    $('lobby-pw-input').value='';
+    $('lobby-pw-error').textContent='';
+    $('lobby-pw-modal').classList.add('open');
+    setTimeout(()=>$('lobby-pw-input')?.focus(),100);
+  }else{
+    myName=name;saveName(name);
+    socket.emit('joinRoom',{code,name,token:myToken});
+  }
+}
+
+$('btn-pw-confirm')?.addEventListener('click',()=>{
+  const name=$('lobby-name').value.trim();
+  const pw=$('lobby-pw-input').value;
+  if(!_pendingJoinCode)return;
+  myName=name;saveName(name);
+  socket.emit('joinRoom',{code:_pendingJoinCode,name,token:myToken,password:pw});
+  $('lobby-pw-modal').classList.remove('open');
+  _pendingJoinCode=null;
+});
+$('lobby-pw-input')?.addEventListener('keydown',e=>{if(e.key==='Enter')$('btn-pw-confirm')?.click();});
+$('btn-pw-cancel')?.addEventListener('click',()=>{$('lobby-pw-modal').classList.remove('open');_pendingJoinCode=null;});
+
+$('rooms-search')?.addEventListener('input',async()=>{
+  try{const r=await fetch('/api/rooms');renderRoomList(await r.json());}catch(e){}
+});
+$('rooms-sort')?.addEventListener('change',async()=>{
+  try{const r=await fetch('/api/rooms');renderRoomList(await r.json());}catch(e){}
+});
+$('btn-rooms-refresh')?.addEventListener('click',loadPublicRooms);
+
+// ── Waiting room ─────────────────────────────────────────────────
+$('btn-start-game')?.addEventListener('click',()=>socket.emit('startGame'));
+$('btn-leave-room')?.addEventListener('click',()=>showLeaveConfirm());
+function updateWaitingHostUI(isHost){const b=$('btn-start-game');if(b)b.style.display=isHost?'':'none';}
 
 // ── Socket core ────────────────────────────────────────────────
-socket.on('roomJoined',({code,socketId,isHost})=>{mySocketId=socketId;roomCode=code;hide('lobby-screen');show('waiting-screen');$('waiting-code').textContent=code;$('room-badge-code').textContent=code;updateWaitingHostUI(isHost);});
-socket.on('roomError',msg=>showLobbyError(msg));
+socket.on('roomJoined',({code,socketId,isHost,roomName})=>{
+  _isHost=!!isHost;
+  mySocketId=socketId;roomCode=code;
+  hide('lobby-screen');
+  show('waiting-screen');
+  const wc=$('waiting-code');if(wc)wc.textContent=code;
+  const rb=$('room-badge-code');if(rb)rb.textContent=code;
+  const rn=$('waiting-room-name');if(rn)rn.textContent=roomName||'';
+  updateWaitingHostUI(isHost);
+});
+socket.on('roomError',msg=>{
+  showLobbyError(msg);
+  // If password was wrong, re-open the pw modal
+  if(msg==='Wrong password'&&_pendingJoinCode){
+    $('lobby-pw-error').textContent='Incorrect password';
+    $('lobby-pw-modal').classList.add('open');
+  }
+});
 socket.on('gameLaunched',()=>launchGame());
 socket.on('autoLaunch',()=>launchGame());
 socket.on('banned',()=>{const m=document.createElement('div');m.className='kick-modal';m.innerHTML='<div class="kick-card"><div class="kick-title" style="color:#ff9800">🚫 You are banned</div><div style="color:rgba(255,255,255,0.5);font-size:.85rem;margin-bottom:20px;">You were banned from this room by the host.</div><button onclick="location.reload()" class="kick-btn">Back to Lobby</button></div>';document.body.appendChild(m);});
 socket.on('kicked',()=>{const m=document.createElement('div');m.className='kick-modal';m.innerHTML='<div class="kick-card"><div class="kick-title">You were kicked</div><button onclick="location.reload()" class="kick-btn">Back to Lobby</button></div>';document.body.appendChild(m);});
-socket.on('hostChanged',({hostId})=>{updateWaitingHostUI(hostId===mySocketId);if(hostId===mySocketId){const t=document.createElement('div');t.className='host-toast';t.textContent='\ud83d\udc51 You are now the host';document.body.appendChild(t);setTimeout(()=>t.remove(),3000);}});
-function updateWaitingHostUI(isHost){const b=$('btn-start-game');if(b)b.style.display=isHost?'':'none';}
+socket.on('hostChanged',({hostId})=>{_isHost=(hostId===mySocketId);syncBetTimerHostLock(_isHost);updateWaitingHostUI(hostId===mySocketId);if(hostId===mySocketId){const t=document.createElement('div');t.className='host-toast';t.textContent='\ud83d\udc51 You are now the host';document.body.appendChild(t);setTimeout(()=>t.remove(),3000);}});
 socket.on('insuranceOfferSeat',({sid,cost})=>showInsuranceForSeat(sid,cost));
 socket.on('stateUpdate',({gs,players,hostId})=>{const wl=$('waiting-players');if(wl)wl.innerHTML=Object.entries(players).map(([id,p])=>`<div class="waiting-player">${id===hostId?'<span class="lobby-crown">\ud83d\udc51</span>':''}${p.name}</div>`).join('');const sb=$('btn-start-game');if(sb)sb.style.display=(mySocketId===hostId)?'':'none';// Always sync room badge
-if(roomCode){const rb=$('room-badge-code');if(rb)rb.textContent=roomCode;}if(!gs.insurancePhase){document.querySelectorAll('.seat.insurance-highlight').forEach(e=>e.classList.remove('insurance-highlight'));$('insurance-modal')?.classList.add('hidden');}trackRound(gs,players);renderState(gs,players,hostId);prevGs=JSON.parse(JSON.stringify(gs));});
+if(roomCode){const rb=$('room-badge-code');if(rb)rb.textContent=roomCode;}window._gsInsurancePhase=!!gs.insurancePhase;if(!gs.insurancePhase){document.querySelectorAll('.seat.insurance-highlight').forEach(e=>e.classList.remove('insurance-highlight'));$('insurance-modal')?.classList.add('hidden');}trackRound(gs,players);renderState(gs,players,hostId);prevGs=JSON.parse(JSON.stringify(gs));});
 socket.on('timerTick',secs=>{
   const gs=prevGs;
-  // Cancel timer display if no chips placed anywhere
-  if(gs&&gs.activeSeats.length===0){hide('bet-timer-wrap');return;}
-  const el=$('bet-timer-text'),bar=$('bet-timer-bar');
-  if(el)el.textContent=secs;if(bar)bar.style.width=(secs/15*100)+'%';
-  show('bet-timer-wrap');
-  if(secs<=5&&secs>0)playTone(880,0.05,'square',sfxVolume*0.3);
+  if(gs&&gs.activeSeats.length===0){hide('bet-timer-wrap');stopBetTimerArc();return;}
+  hide('bet-timer-wrap'); // hide old text timer, use arc instead
+  updateBetTimerArc(secs,15);
+  // no sound for timer ticks
 });
-socket.on('timerCancel',()=>hide('bet-timer-wrap'));
+socket.on('timerCancel',()=>{hide('bet-timer-wrap');stopBetTimerArc();});
 socket.on('yourTurn',({sid,handIdx,ownerId})=>{
   activeTurnSid=sid;activeTurnHandIdx=handIdx||0;actionPending=false;stopCountdown();
   if(ownerId===mySocketId){
-    // Small delay to let any in-progress card animation finish before showing buttons
+    _pendingCountdownSid=sid;
+    const myGen=++_countdownGen;
     setTimeout(()=>{
+      if(_countdownGen!==myGen)return;
       showPlayButtons(sid,handIdx||0);
       setTimeout(()=>{
+        if(_countdownGen!==myGen)return;
         const pb=$('play-buttons');
         if(pb&&!pb.classList.contains('betting-hidden')&&!pb.classList.contains('hidden'))
           startCountdown(15000,()=>autoPlayAction(sid,handIdx||0));
@@ -88,7 +398,7 @@ socket.on('yourTurn',({sid,handIdx,ownerId})=>{
   }
 });
 socket.on('dealVote',({ready,needed,readyIds})=>{const b=$('btn-deal');if(!b)return;if(readyIds.includes(mySocketId)){b.textContent=`Waiting\u2026 (${ready}/${needed})`;b.disabled=true;b.style.opacity='0.6';}else{b.textContent=`Deal (${ready}/${needed} ready)`;b.disabled=false;b.style.opacity='1';}});
-socket.on('stateUpdate',({gs})=>{if(gs.gameStatus==='betting'){winOverlayShown=false;activeTurnSid=null;actionPending=false;bjSoundedSeats.clear();shownSideBetPills.clear();stopCountdown();hide('play-buttons');const db=$('btn-deal');if(db){db.disabled=false;db.style.opacity='1';db.textContent='DEAL';}document.querySelectorAll('.card,.card-back').forEach(c=>c.classList.add('fly-out'));stopDealCountdown();document.querySelectorAll('.circle-win-label,.win-chip-stack,.chip-stack,.sidebet-win-pill').forEach(e=>e.remove());Object.keys(_prevScores).forEach(k=>delete _prevScores[k]);Object.keys(_scoreOverride).forEach(k=>delete _scoreOverride[k]);}});
+
 
 // ── Smooth countdown rectangle ─────────────────────────────────
 function startCountdown(durationMs,onTimeout){
@@ -216,6 +526,47 @@ function stopDealCountdown(){
   if(dealCountdownRaf){cancelAnimationFrame(dealCountdownRaf);dealCountdownRaf=null;}
   document.getElementById('deal-countdown-svg')?.remove();
 }
+// ── Bet timer arc around DEAL button ──────────────────────────
+let _betArcMax=15;
+function updateBetTimerArc(secsLeft,total){
+  _betArcMax=total||15;
+  const dealBtn=$('btn-deal');if(!dealBtn)return;
+  let svg=document.getElementById('bet-arc-svg');
+  if(!svg){
+    svg=document.createElementNS('http://www.w3.org/2000/svg','svg');
+    svg.id='bet-arc-svg';
+    svg.style.cssText='position:fixed;pointer-events:none;z-index:199;overflow:visible;';
+    document.body.appendChild(svg);
+    // Build CCW path (clockwise drain) around deal button
+    const pad=10;
+    const rect=dealBtn.getBoundingClientRect();
+    const x=rect.left-pad,y=rect.top-pad,w=rect.width+pad*2,h=rect.height+pad*2,rx=28;
+    const mx=w/2;
+    const pathD=`M ${mx} 0 L ${rx} 0 Q 0 0 0 ${rx} L 0 ${h-rx} Q 0 ${h} ${rx} ${h} L ${w-rx} ${h} Q ${w} ${h} ${w} ${h-rx} L ${w} ${rx} Q ${w} 0 ${w-rx} 0 L ${mx} 0`;
+    const perim=2*(w-2*rx)+2*(h-2*rx)+2*Math.PI*rx;
+    svg.setAttribute('viewBox',`0 0 ${w} ${h}`);
+    svg.style.left=x+'px';svg.style.top=y+'px';svg.style.width=w+'px';svg.style.height=h+'px';
+    const track=document.createElementNS('http://www.w3.org/2000/svg','path');
+    track.id='bet-arc-track';track.setAttribute('d',pathD);track.setAttribute('fill','none');
+    track.setAttribute('stroke','rgba(255,255,255,0.12)');track.setAttribute('stroke-width','3.5');
+    track.setAttribute('stroke-linecap','round');track.setAttribute('stroke-linejoin','round');
+    const line=document.createElementNS('http://www.w3.org/2000/svg','path');
+    line.id='bet-arc-line';line.setAttribute('d',pathD);line.setAttribute('fill','none');
+    line.setAttribute('stroke','#fff');line.setAttribute('stroke-width','3.5');
+    line.setAttribute('stroke-linecap','round');line.setAttribute('stroke-linejoin','round');
+    line.setAttribute('stroke-dasharray',String(perim));line.setAttribute('stroke-dashoffset','0');
+    svg.appendChild(track);svg.appendChild(line);
+    svg._perim=perim;
+  }
+  const line=document.getElementById('bet-arc-line');if(!line)return;
+  const p=1-(secsLeft/_betArcMax);
+  line.setAttribute('stroke-dashoffset',String(svg._perim*p));
+  const r=Math.min(255,Math.round(255*p*2)),g=Math.max(0,Math.round(255*(1-p*1.5)));
+  line.setAttribute('stroke',`rgb(${r},${g},30)`);
+}
+function stopBetTimerArc(){
+  document.getElementById('bet-arc-svg')?.remove();
+}
 function positionCountdownBorder(){buildCountdownSVG();}
 function autoPlayAction(sid,handIdx){
   if(!activeTurnSid||actionPending)return;
@@ -226,6 +577,21 @@ function autoPlayAction(sid,handIdx){
 // ── Auto-play setting ──────────────────────────────────────────
 const autoToggle=$('autoplay-toggle'),threshWrap=$('autoplay-threshold-wrap');
 if(autoToggle){autoToggle.addEventListener('click',()=>{autoplayOn=!autoplayOn;autoToggle.classList.toggle('on',autoplayOn);if(threshWrap)threshWrap.style.display=autoplayOn?'flex':'none';sfxClick();});}
+const betTimerToggle=$('bet-timer-toggle');
+if(betTimerToggle){betTimerToggle.addEventListener('click',()=>{
+  // Only host can toggle — check current known hostId
+  if(!_isHost){return;}
+  betTimerEnabled=!betTimerEnabled;
+  betTimerToggle.classList.toggle('on',betTimerEnabled);
+  socket.emit('setBetTimerEnabled',{enabled:betTimerEnabled});
+});}
+// Lock/unlock bet timer row based on host status
+function syncBetTimerHostLock(isHost){
+  const row=$('bet-timer-row');
+  if(!row)return;
+  if(isHost){row.classList.remove('host-locked-off');}
+  else{row.classList.add('host-locked-off');}
+}
 $('autoplay-threshold')?.addEventListener('change',()=>{autoplayThreshold=parseInt($('autoplay-threshold').value)||17;});
 
 // ── Settings ───────────────────────────────────────────────────
@@ -246,29 +612,89 @@ function buildAndSaveHistory(gs,players){
   if(!mySeats.length)return;
   const ordered=[...mySeats].sort((a,b)=>Number(b)-Number(a));
   let totalBet=0,netCash=0;
+  // Build seat map: all 5 slots, which are mine
+  const allSeats=['1','2','3','4','5'];
+  const seatMap=allSeats.map(n=>({n,mine:mySeats.includes(n),taken:!!(gs.seatOwners?.[n])}));
   const seats=ordered.map(sid=>{
     const main=gs.bets?.[sid]?.main||0,pp=gs.bets?.[sid]?.pp||0,sp=gs.bets?.[sid]?.sp||0;
     totalBet+=main+pp+sp;
     const badges=gs.badges?.[sid]||[];
     const hasBJ=badges.some(b=>b.cls==='bj'),hasWin=badges.some(b=>b.cls==='win'),hasPush=badges.some(b=>b.cls==='push');
-    const mr=hasBJ?Math.floor(main*2.5):hasWin?main*2:hasPush?main:0;
+    const isBJPush=hasBJ&&hasPush;
+    const mr=isBJPush?main:hasBJ?Math.floor(main*2.5):hasWin?main*2:hasPush?main:0;
     const mainNet=mr-main;
     const ppWin=gs.sideBetWins?.[sid]?.pp?.payout||0,spWin=gs.sideBetWins?.[sid]?.sp?.payout||0;
     netCash+=mainNet+(ppWin-pp)+(spWin-sp);
+    const isDoubledSeat=gs.doubled?.[sid]||false;
+    const mkHandEntry=(cards,resultBadge,hk)=>{
+      const isBust=resultBadge?.toLowerCase().includes('bust');
+      // Determine if this hand was doubled
+      const handDoubled=hk?gs.doubledHands?.[sid]?.[hk]:isDoubledSeat;
+      // Per-card decisions: first 2 = null (dealt), rest = hit or double
+      const decisions=cards.map((c,i)=>{
+        if(i<2)return null;
+        // If exactly 3 cards and hand was doubled, that 3rd card is the double card
+        if(handDoubled&&cards.length===3&&i===2)return'double';
+        return'hit';
+      });
+      return{cards,decisions,stood:!isBust,result:resultBadge||'',score:score(cards)};
+    };
     let hands=[];
-    if(gs.splitActive?.[sid]){['hand1','hand2'].forEach((hk,i)=>{const cards=gs.hands?.[sid]?.[hk]||[];hands.push({cards,result:badges[i]?.text||'',score:score(cards)});});}
-    else{const cards=Array.isArray(gs.hands?.[sid])?gs.hands[sid]:[];hands.push({cards,result:badges[0]?.text||'',score:score(cards)});}
+    if(gs.splitActive?.[sid]){
+      ['hand1','hand2'].forEach((hk,i)=>{
+        const cards=gs.hands?.[sid]?.[hk]||[];
+        hands.push(mkHandEntry(cards,badges[i]?.text,hk));
+      });
+    } else {
+      const cards=Array.isArray(gs.hands?.[sid])?gs.hands[sid]:[];
+      hands.push(mkHandEntry(cards,badges[0]?.text));
+    }
     return{sid,mainBet:main,ppBet:pp,spBet:sp,mainNet,ppNet:ppWin-pp,spNet:spWin-sp,ppWin,spWin,hands};
   });
-  pushRound({id:Date.now(),time:new Date().toISOString(),roomCode,tableName:'Kikikov BlackJack',totalBet,netCash,seats,dealerCards:gs.hands?.dealer||[]});
+  pushRound({id:Date.now(),time:new Date().toISOString(),roomCode,tableName:'Kikikov BlackJack',totalBet,netCash,seats,seatMap,dealerCards:gs.hands?.dealer||[]});
 }
 
 // ── Render State ───────────────────────────────────────────────
 function renderState(gs,players,hostId){
+  // Betting phase reset — runs BEFORE chip rendering so re-render adds chips back correctly
+  if(gs.gameStatus==='betting'){
+    winOverlayShown=false;activeTurnSid=null;actionPending=false;
+    bjSoundedSeats.clear();shownSideBetPills.clear();stopCountdown();
+    hide('play-buttons');
+    const db=$('btn-deal');if(db){db.disabled=false;db.style.opacity='1';db.textContent='DEAL';}
+    document.querySelectorAll('.card,.card-back').forEach(c=>c.classList.add('fly-out'));
+    stopDealCountdown();
+    document.querySelectorAll('.circle-win-label,.win-chip-stack,.sidebet-win-pill,.seat-result-icon').forEach(e=>e.remove());
+    stopBetTimerArc();
+    document.querySelectorAll('.seat-bottom-ind').forEach(e=>{e.classList.add('hidden');e.innerHTML='';e.className='seat-bottom-ind hidden';});
+    document.querySelectorAll('.chip-stack').forEach(e=>e.remove());
+    Object.keys(_prevScores).forEach(k=>delete _prevScores[k]);
+    Object.keys(_scoreOverride).forEach(k=>delete _scoreOverride[k]);
+    _pendingCountdownSid=null;
+    // Cancel any stale score animation tokens on all pills
+    document.querySelectorAll('.score-display,.split-score').forEach(p=>{p._animTok=(p._animTok||0)+1;});
+  }
+  // Sync host status
+  const isHostNow=(mySocketId===hostId);
+  if(isHostNow!==_isHost){_isHost=isHostNow;syncBetTimerHostLock(_isHost);}
+  // Sync bet timer toggle to server state (gs.betTimerEnabled)
+  const btt=$('bet-timer-toggle');
+  if(btt){const serverOn=gs.betTimerEnabled!==false;if(btt.classList.contains('on')!==serverOn)btt.classList.toggle('on',serverOn);betTimerEnabled=serverOn;}
+  // Training mode banner — visible to ALL players when lab is active
+  let tmBanner=document.getElementById('training-mode-banner');
+  if(gs.isTrainingMode){
+    if(!tmBanner){tmBanner=document.createElement('div');tmBanner.id='training-mode-banner';document.getElementById('game-container')?.appendChild(tmBanner);}
+    tmBanner.textContent='⚠️ TRAINING MODE — FORCED CARDS ACTIVE';tmBanner.style.display='block';
+  } else {
+    if(tmBanner)tmBanner.style.display='none';
+  }
   const pList=$('players-list');
-  if(pList)pList.innerHTML=Object.entries(players).map(([id,p])=>`<div class="player-entry ${id===mySocketId?'me':''}"><span class="pe-name">${id===hostId?'\ud83d\udc51 ':''}${p.name}</span><span class="pe-wallet">\u20ac${p.wallet.toLocaleString()}</span></div>`).join('');
+  if(pList)pList.innerHTML=Object.entries(players).map(([id,p])=>`<div class="player-entry ${id===mySocketId?'me':''}${id===hostId?' host-player':''}" title="${id===hostId?'Host/Admin':'Player'}"><span class="pe-name">${id===hostId?'<span class="host-crown">👑</span> ':''}${p.name}${id===mySocketId?' <span class="you-tag">YOU</span>':''}</span><span class="pe-wallet">€${p.wallet.toLocaleString()}</span></div>`).join('');
   const me=players[mySocketId];
-  if(me){myWallet=me.wallet;$('wallet-amount').textContent='\u20ac'+me.wallet.toLocaleString();$('hud-bet-amount').textContent='\u20ac'+(me.totalBet||0).toLocaleString();}
+  if(me){myWallet=me.wallet;$('wallet-amount').textContent='\u20ac'+me.wallet.toLocaleString();$('hud-bet-amount').textContent='\u20ac'+(me.totalBet||0).toLocaleString();
+    // Dim chips player can't afford
+    document.querySelectorAll('.chip').forEach(c=>{const v=parseInt(c.dataset.value)||0;c.style.opacity=myWallet>=v?'1':'0.32';c.style.filter=myWallet>=v?'':'grayscale(0.5)';});
+  }
   const status=gs.gameStatus;
   const mySeats=Object.entries(gs.seatOwners||{}).filter(([,id])=>id===mySocketId).map(([s])=>s);
   const bLocked=gs.betsLocked,isBetting=['betting','idle'].includes(status);
@@ -278,6 +704,11 @@ function renderState(gs,players,hostId){
   if(canDeal)show('deal-btn-wrap');else hide('deal-btn-wrap');
   const db=$('btn-deal');if(db&&!myReady){db.disabled=false;db.style.opacity='1';if(!bLocked)db.textContent='DEAL';}
   const ct=$('chip-tray');if(ct){ct.classList.remove('hidden');if(isBetting)ct.classList.remove('tray-hidden');else ct.classList.add('tray-hidden');}
+  // Dim chips the player can't afford
+  document.querySelectorAll('.chip[data-value]').forEach(ch=>{
+    const val=parseInt(ch.dataset.value)||0;
+    ch.classList.toggle('chip-disabled',myWallet<val);
+  });
   const ca=$('chip-action-floats');if(ca){if(isBetting)ca.classList.remove('hidden');else ca.classList.add('hidden');}
   if(bLocked){hide('btn-undo');hide('btn-rebet');hide('btn-2x');}
   else{if(isBetting)show('btn-undo');else hide('btn-undo');const hasLast=!!(gs.lastRoundBets?.[mySocketId]?.length);if(hasLast&&isBetting&&!myHasBets){show('btn-rebet');hide('btn-2x');}else{hide('btn-rebet');}if(myHasBets&&isBetting){show('btn-2x');hide('btn-rebet');}else if(!myHasBets||!isBetting){hide('btn-2x');}}
@@ -292,11 +723,88 @@ function renderState(gs,players,hostId){
   if(gs.gameStatus==='game_over'&&gs.grandTotal>0){const w=calcMyWinnings(gs);if(w>0)showWinOverlay(w);}
   updateStatusMsg(gs,players);
   renderAdminPanel(gs,players,hostId);
+  if(mySocketId===hostId)renderDealLab(gs);
 }
-function calcMyWinnings(gs){let t=0;for(const [sid,oid] of Object.entries(gs.seatOwners||{})){if(oid!==mySocketId)continue;const b=gs.badges?.[sid]||[];if(b.some(x=>x.cls==='bj'))t+=Math.floor(gs.bets[sid].main*2.5);else if(b.some(x=>x.cls==='win'))t+=gs.bets[sid].main*2;else if(b.some(x=>x.cls==='push'))t+=gs.bets[sid].main;if(gs.sideBetWins?.[sid]?.pp)t+=gs.sideBetWins[sid].pp.payout;if(gs.sideBetWins?.[sid]?.sp)t+=gs.sideBetWins[sid].sp.payout;}return t;}
-function updateStatusMsg(gs,players){const el=$('status-message');if(!el)return;const st=gs.gameStatus;if(st==='betting'||st==='idle'){if(gs.betsLocked&&gs.readyPlayers?.length){const n=new Set(gs.activeSeats.map(s=>gs.seatOwners?.[s]).filter(Boolean)).size;el.textContent=`Waiting for all to deal\u2026 (${gs.readyPlayers.length}/${n})`;}else el.textContent=Object.keys(gs.seatOwners||{}).length===0?'Click a seat to join!':'Place your bets';}else if(st==='dealing')el.textContent='Dealing\u2026';else if(st==='playing'&&activeTurnSid){const oid=gs.seatOwners?.[activeTurnSid],pn=oid?players[oid]?.name:'?';el.textContent=(oid===mySocketId)?`Your turn \u2014 Seat ${activeTurnSid}`:`${pn}'s turn`;}else if(st==='dealer_turn')el.textContent='Dealer\u2019s turn\u2026';else if(st==='game_over')el.textContent='Round over \u2014 next round soon\u2026';}
+function calcMyWinnings(gs){let t=0;for(const [sid,oid] of Object.entries(gs.seatOwners||{})){if(oid!==mySocketId)continue;const b=gs.badges?.[sid]||[];const isBJPush=b.some(x=>x.cls==='bj')&&b.some(x=>x.cls==='push');if(isBJPush)t+=gs.bets[sid].main;else if(b.some(x=>x.cls==='bj'))t+=Math.floor(gs.bets[sid].main*2.5);else if(b.some(x=>x.cls==='win'))t+=gs.bets[sid].main*2;else if(b.some(x=>x.cls==='push'))t+=gs.bets[sid].main;if(gs.sideBetWins?.[sid]?.pp)t+=gs.sideBetWins[sid].pp.payout;if(gs.sideBetWins?.[sid]?.sp)t+=gs.sideBetWins[sid].sp.payout;}return t;}
+function updateStatusMsg(gs,players){const el=$('status-message');if(!el)return;const st=gs.gameStatus;if(st==='betting'||st==='idle'){if(gs.betsLocked&&gs.readyPlayers?.length){const n=new Set(gs.activeSeats.map(s=>gs.seatOwners?.[s]).filter(Boolean)).size;el.textContent=`Waiting for all to deal\u2026 (${gs.readyPlayers.length}/${n})`;}else{const firstBettor=gs.betHistory?.length>0?players[gs.betHistory[0].socketId]?.name:null;el.textContent=Object.keys(gs.seatOwners||{}).length===0?'Click a seat to join!':'Place your bets';}}else if(st==='dealing')el.textContent='Dealing\u2026';else if(st==='playing'&&activeTurnSid){const oid=gs.seatOwners?.[activeTurnSid],pn=oid?players[oid]?.name:'?';el.textContent=(oid===mySocketId)?`Your turn \u2014 Seat ${activeTurnSid}`:`${pn}'s turn`;}else if(st==='dealer_turn')el.textContent='Dealer\u2019s turn\u2026';else if(st==='game_over')el.textContent='Round over \u2014 next round soon\u2026';}
 function renderAdminPanel(gs,players,hostId){const canShow=mySocketId===hostId&&['betting','idle'].includes(gs.gameStatus);let panel=$('admin-panel');if(!canShow){if(panel)panel.remove();return;}if(!panel){panel=document.createElement('div');panel.id='admin-panel';const sc=$('settings-card');if(sc){const hr=document.createElement('hr');hr.style.cssText='border:none;border-top:1px solid rgba(255,255,255,0.1);margin:14px 0;';sc.insertBefore(hr,$('settings-close'));sc.insertBefore(panel,$('settings-close'));}else $('game-container')?.appendChild(panel);}const others=Object.entries(players).filter(([id])=>id!==mySocketId);if(!others.length){panel.innerHTML='<div class="admin-title" style="opacity:.4">No other players</div>';return;}panel.innerHTML=`<div class="admin-title">\ud83d\udc51 Kick Players</div>`+others.map(([id,p])=>`<div class="admin-row"><span class="admin-name">${p.name}</span><div class="admin-action-btns"><button class="admin-kick-btn" data-id="${id}">Kick</button><button class="admin-ban-btn" data-id="${id}">Ban</button></div></div>`).join('');panel.querySelectorAll('.admin-kick-btn').forEach(btn=>{btn.addEventListener('click',()=>{sfxClick();socket.emit('kickPlayer',{targetId:btn.dataset.id});});});
-  panel.querySelectorAll('.admin-ban-btn').forEach(btn=>{btn.addEventListener('click',()=>{sfxClick();const name=btn.closest('.admin-row')?.querySelector('.admin-name')?.textContent||'this player';showConfirmModal(`Ban ${name}?`,`They won't be able to rejoin this room.`,'Ban','#ff9800',()=>socket.emit('banPlayer',{targetId:btn.dataset.id}));});});}
+  panel.querySelectorAll('.admin-ban-btn').forEach(btn=>{btn.addEventListener('click',()=>{sfxClick();const name=btn.closest('.admin-row')?.querySelector('.admin-name')?.textContent||'this player';showConfirmModal(`Ban ${name}?`,`They won't be able to rejoin this room.`,'Ban','#ff9800',()=>socket.emit('banPlayer',{targetId:btn.dataset.id}));});});
+}
+let _dealLabOn=false;
+function renderDealLab(gs){
+  const sc=$('settings-card');if(!sc)return;
+  // Build the panel once; afterwards only update seat pickers
+  let lab=$('deal-lab');
+  if(!lab){
+    lab=document.createElement('div');lab.id='deal-lab';
+    // Insert a divider then the panel before the Done button
+    const hr=document.createElement('hr');hr.style.cssText='border:none;border-top:1px solid rgba(255,255,255,0.1);margin:14px 0;';
+    sc.insertBefore(hr,$('settings-close'));
+    sc.insertBefore(lab,$('settings-close'));
+    // ── Build static structure ──
+    const VALS=['A','2','3','4','5','6','7','8','9','10','J','Q','K'];
+    const SUITS=['S','H','D','C'];
+    const SUIT_SYM={S:'♠',H:'♥',D:'♦',C:'♣'};
+    const sel=(id,opts,sym)=>{const s=document.createElement('select');s.id=id;s.style.cssText='flex:1;background:#111;color:#fff;border:1px solid rgba(255,255,255,0.2);border-radius:6px;padding:4px 6px;font-family:Rajdhani,sans-serif;font-size:.82rem;';opts.forEach(v=>{const o=document.createElement('option');o.value=v;o.textContent=sym?sym[v]:v;s.appendChild(o);});return s;};
+    const row2=(a,b)=>{const r=document.createElement('div');r.style.cssText='display:flex;gap:6px;margin-bottom:2px;';r.appendChild(a);r.appendChild(b);return r;};
+    const lbl=(t)=>{const d=document.createElement('div');d.style.cssText='font-size:.62rem;font-weight:700;letter-spacing:.1em;color:rgba(255,200,50,0.7);text-transform:uppercase;margin:6px 0 2px;';d.textContent=t;return d;};
+    // Title + toggle row
+    const hdr=document.createElement('div');hdr.style.cssText='display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;';
+    const ttl=document.createElement('div');ttl.style.cssText='font-weight:700;font-size:.72rem;letter-spacing:.14em;text-transform:uppercase;color:rgba(255,255,255,0.5);';ttl.textContent='🃏 Deal Lab';
+    const tog=document.createElement('div');tog.className='autoplay-toggle-btn';tog.id='deal-lab-toggle';tog.title='Enable forced dealing';
+    tog.addEventListener('click',()=>{_dealLabOn=!_dealLabOn;tog.classList.toggle('on',_dealLabOn);socket.emit('dealLabToggle',{on:_dealLabOn});sfxClick();});
+    hdr.appendChild(ttl);hdr.appendChild(tog);lab.appendChild(hdr);
+    // Dealer pickers
+    lab.appendChild(lbl('Dealer Face (visible)'));
+    lab.appendChild(row2(sel('dl-d1-v',VALS),sel('dl-d1-s',SUITS,SUIT_SYM)));
+    lab.appendChild(lbl('Dealer Hole (hidden)'));
+    lab.appendChild(row2(sel('dl-d2-v',VALS),sel('dl-d2-s',SUITS,SUIT_SYM)));
+    // Seat pickers container
+    const seatsCont=document.createElement('div');seatsCont.id='dl-seats-cont';lab.appendChild(seatsCont);
+    // Next-hit container
+    const hitCont=document.createElement('div');hitCont.id='dl-hits-cont';lab.appendChild(hitCont);
+    // Apply button
+    const applyBtn=document.createElement('button');applyBtn.id='dl-apply';applyBtn.textContent='Apply & Arm';applyBtn.style.cssText='width:100%;padding:9px;background:linear-gradient(135deg,#b8860b,#6b4a08);color:#fff;border:none;border-radius:10px;font-family:Rajdhani,sans-serif;font-weight:700;font-size:.85rem;cursor:pointer;margin-top:8px;';
+    applyBtn.addEventListener('click',()=>{
+      if(!_dealLabOn){const msg=document.createElement('div');msg.style.cssText='color:#ef5350;font-size:.75rem;text-align:center;margin-top:4px;';msg.textContent='Enable Deal Lab switch first';applyBtn.after(msg);setTimeout(()=>msg.remove(),2000);return;}
+      sfxClick();
+      // Always read from prevGs (live state), not stale closure
+      const curGs=prevGs;
+      const gc=(v,s)=>({value:$(v)?.value||'A',suit:$(s)?.value||'S'});
+      const forced={dealer:[gc('dl-d1-v','dl-d1-s'),gc('dl-d2-v','dl-d2-s')],seats:{},nextHit:{}};
+      const liveSeats=Object.entries(curGs?.seatOwners||{}).filter(([,id])=>id===mySocketId).map(([s])=>s);
+      liveSeats.forEach(sid=>{
+        forced.seats[sid]=[gc('dl-s'+sid+'c1-v','dl-s'+sid+'c1-s'),gc('dl-s'+sid+'c2-v','dl-s'+sid+'c2-s')];
+        forced.nextHit[sid]=gc('dl-s'+sid+'h-v','dl-s'+sid+'h-s');
+      });
+      socket.emit('forceDeck',forced);
+      const msg=document.createElement('div');msg.style.cssText='color:#4caf50;font-size:.75rem;text-align:center;margin-top:6px;';msg.textContent='✓ Armed — applies to next deal';applyBtn.after(msg);setTimeout(()=>msg.remove(),3000);
+    });
+    lab.appendChild(applyBtn);
+  }
+  // Update seat pickers dynamically (seats may change each round)
+  const VALS=['A','2','3','4','5','6','7','8','9','10','J','Q','K'];
+  const SUITS=['S','H','D','C'];
+  const SUIT_SYM={S:'♠',H:'♥',D:'♦',C:'♣'};
+  const mySeats=Object.entries(gs.seatOwners||{}).filter(([,id])=>id===mySocketId).map(([s])=>s);
+  const sc2=$('dl-seats-cont');const hc=$('dl-hits-cont');
+  if(sc2&&hc){
+    sc2.innerHTML='';hc.innerHTML='';
+    const sel2=(id,opts,sym)=>{const s=document.createElement('select');s.id=id;s.style.cssText='flex:1;background:#111;color:#fff;border:1px solid rgba(255,255,255,0.2);border-radius:6px;padding:4px 6px;font-family:Rajdhani,sans-serif;font-size:.82rem;';opts.forEach(v=>{const o=document.createElement('option');o.value=v;o.textContent=sym?sym[v]:v;s.appendChild(o);});return s;};
+    const row3=(a,b)=>{const r=document.createElement('div');r.style.cssText='display:flex;gap:6px;margin-bottom:2px;';r.appendChild(a);r.appendChild(b);return r;};
+    const lbl2=(t)=>{const d=document.createElement('div');d.style.cssText='font-size:.62rem;font-weight:700;letter-spacing:.1em;color:rgba(255,200,50,0.7);text-transform:uppercase;margin:6px 0 2px;';d.textContent=t;return d;};
+    mySeats.forEach(sid=>{
+      sc2.appendChild(lbl2('Seat '+sid+' Card 1'));sc2.appendChild(row3(sel2('dl-s'+sid+'c1-v',VALS),sel2('dl-s'+sid+'c1-s',SUITS,SUIT_SYM)));
+      sc2.appendChild(lbl2('Seat '+sid+' Card 2'));sc2.appendChild(row3(sel2('dl-s'+sid+'c2-v',VALS),sel2('dl-s'+sid+'c2-s',SUITS,SUIT_SYM)));
+      hc.appendChild(lbl2('Seat '+sid+' Next Hit'));hc.appendChild(row3(sel2('dl-s'+sid+'h-v',VALS),sel2('dl-s'+sid+'h-s',SUITS,SUIT_SYM)));
+    });
+  }
+  // Sync toggle visual + local state from server
+  if(gs.dealLabEnabled!==undefined&&gs.dealLabEnabled!==_dealLabOn){
+    _dealLabOn=gs.dealLabEnabled;
+  }
+  const tog2=$('deal-lab-toggle');if(tog2)tog2.classList.toggle('on',_dealLabOn);
+}
 
 // ── Seat Rendering ─────────────────────────────────────────────
 function renderSeat(sid,gs,players){
@@ -307,6 +815,13 @@ function renderSeat(sid,gs,players){
   const mc=seatEl.querySelector('.bet-circle.main-bet');
   if(ownerId){seatEl.classList.add('my-seat');mc?.classList.add('claimed');}
   else{seatEl.classList.remove('my-seat');mc?.classList.remove('claimed');}
+  // Gold ring + bobbing arrow only for seats I own
+  seatEl.classList.toggle('my-seat-owned', isMine);
+  let arr=seatEl.querySelector('.my-seat-arrow');
+  if(isMine){if(!arr){arr=document.createElement('div');arr.className='my-seat-arrow';seatEl.appendChild(arr);}}
+  else{arr?.remove();}
+  // Tooltip: all seats show owner name on hover
+  seatEl.title=ownerName?ownerName:'';
   const lb=seatEl.querySelector('.leave-seat-btn');
   if(lb){if(isMine&&isBetting)lb.classList.remove('hidden');else lb.classList.add('hidden');}
   const nt=seatEl.querySelector('.seat-name-tag');
@@ -314,18 +829,108 @@ function renderSeat(sid,gs,players){
     if(ownerName){
       const isInsured=Array.isArray(gs.insuredSeats)&&gs.insuredSeats.includes(sid);
       nt.textContent=(isInsured?'🛡 ':'')+ownerName;
-      nt.classList.remove('hidden');
-      nt.style.background=isMine?'rgba(255,215,0,0.18)':'rgba(255,255,255,0.1)';
-      nt.style.color=isMine?'#ffd700':'#fff';
+      // Show name in betting + dealing; hide once playing starts (score pill takes over top-right)
+      const showName=isBetting||gs.gameStatus==='dealing';
+      nt.classList.toggle('hidden',!showName);
+      // No yellow bg/border — plain subtle style
+      nt.style.background='rgba(0,0,0,0)';
+      nt.style.border='none';
+      nt.style.color='rgba(255,255,255,0.75)';
     }else nt.classList.add('hidden');
   }
   for(const t of ['main','pp','sp'])renderCircle(sid,t,gs,isMine&&isBetting);
   renderHand(sid,gs);renderScore(sid,gs);renderBadges(sid,gs);renderBust(sid,gs);
+  renderSeatIndicator(sid,gs,players);
   // Only show active-turn outline during play phase, not betting
   seatEl.classList.toggle('active-turn', activeTurnSid===sid && !isBetting);
   if(isBetting){
     seatEl.querySelectorAll('.circle-win-label,.win-chip-stack').forEach(e=>e.remove());
     seatEl.classList.remove('insurance-highlight');
+  }
+}
+function renderSeatIndicator(sid,gs,players){
+  const seatEl=$('seat-'+sid);if(!seatEl)return;
+  const ownerId=gs.seatOwners?.[sid];
+  const isBetting=['betting','idle'].includes(gs.gameStatus);
+  const ind=$('sind-'+sid);if(!ind)return;
+  // Betting: hide indicator, show name tag
+  if(isBetting||!ownerId){ind.className='seat-bottom-ind hidden';ind.innerHTML='';return;}
+  const hand=Array.isArray(gs.hands?.[sid])?gs.hands[sid]:[];
+  if(gs.gameStatus==='game_over'){
+    const badges=gs.badges?.[sid]||[];
+    if(!badges.length){ind.className='seat-bottom-ind hidden';ind.innerHTML='';return;}
+    // Helper: build one result cell
+    const mkResultCell=(cls,content,extra='')=>`<div class="sind-cell ${cls}${extra}">${content}</div>`;
+    const PUSH_SVG='<svg viewBox="0 0 20 20" fill="none" width="18" height="18"><path d="M6 13V7M6 7L4 9M6 7L8 9" stroke="#e8a020" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><path d="M14 7v6M14 13L12 11M14 13L16 11" stroke="#e8a020" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+    // Insurance indicator: show golden shield if insured and dealer had BJ
+    const dBJ=isNaturalBJ(gs.hands?.dealer||[])&&gs.dealerRevealed;
+    const wasInsured=Array.isArray(gs.insuredSeats)&&gs.insuredSeats.includes(sid);
+    if(dBJ&&wasInsured){
+      // Dealer BJ, I was insured — show golden shield in indicator
+      ind.className='seat-bottom-ind sind-insured';
+      ind.innerHTML='<svg viewBox="0 0 40 46" fill="none" width="18" height="20"><path d="M20 2 L37 9 L37 24 C37 35 20 44 20 44 C20 44 3 35 3 24 L3 9 Z" fill="rgba(232,160,32,0.25)" stroke="#e8a020" stroke-width="2"/><polyline points="12,23 18,30 29,17" stroke="#e8a020" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>';
+      ind.classList.remove('hidden');return;
+    }
+    if(gs.splitActive?.[sid]){
+      // Per-hand results: badges[0]=hand1, badges[1]=hand2
+      const b1=badges[0]||{};const b2=badges[1]||{};
+      const cellFor=(b)=>{
+        const isBJ=b.cls==='bj';
+        const isWin=b.cls==='win'||isBJ;
+        const isPush=b.cls==='push';
+        if(isBJ)return mkResultCell('sind-cell sind-result-win','<span>BJ</span>');
+        if(isWin)return mkResultCell('sind-cell sind-result-win','🏅');
+        if(isPush)return mkResultCell('sind-cell sind-result-push',PUSH_SVG);
+        return mkResultCell('sind-cell sind-result-lose','<span style="filter:grayscale(1);opacity:0.65;font-size:1rem;">✖</span>');
+      };
+      ind.className='seat-bottom-ind sind-split';
+      ind.innerHTML=cellFor(b2)+cellFor(b1); // H2 left, H1 right
+      ind.classList.remove('hidden');
+    } else {
+      const hasBJ=badges.some(b=>b.cls==='bj');
+      const hasWin=badges.some(b=>b.cls==='win')||hasBJ;
+      const hasPush=badges.some(b=>b.cls==='push');
+      const hasLose=badges.some(b=>b.cls==='lose');
+      ind.innerHTML='';ind.className='seat-bottom-ind';
+      if(hasBJ&&hasPush){ind.classList.add('sind-push');ind.innerHTML='<span style="font-family:Rajdhani,sans-serif;font-weight:900;font-size:.75rem;color:#e8a020;">BJ</span>'+PUSH_SVG;}
+      else if(hasBJ){ind.classList.add('sind-win');ind.innerHTML='<span>BJ</span>';}
+      else if(hasWin){ind.classList.add('sind-win');ind.innerHTML='🏅';}
+      else if(hasPush){ind.classList.add('sind-push');ind.innerHTML=PUSH_SVG;}
+      else if(hasLose){ind.classList.add('sind-lose');ind.innerHTML='<span style="filter:grayscale(1);opacity:0.7;font-size:1.1rem;">✖</span>';}
+      else{ind.className='seat-bottom-ind hidden';return;}
+      ind.classList.remove('hidden');
+    }
+    return;
+  }
+  // Dealing / playing / dealer_turn: show live score in bottom slot
+  if(!hand.length&&!gs.splitActive?.[sid]){ind.className='seat-bottom-ind hidden';ind.innerHTML='';return;}
+
+  // Helper to render a single score cell
+  const mkScoreCell=(h,extraClass='')=>{
+    const isBust=score(h)>21;
+    const isBJHand=isNaturalBJ(h)&&!gs.splitActive?.[sid];
+    const stood=gs.stoodSeats?.includes(sid);
+    if(isBust) return `<div class="sind-cell sind-score sind-bust${extraClass}"><span style="filter:grayscale(1);opacity:0.6;">💥</span></div>`;
+    if(isBJHand) return `<div class="sind-cell sind-score sind-bj${extraClass}"><span>BJ</span></div>`;
+    const val=scoreLabel(h,stood);
+    return `<div class="sind-cell sind-score${extraClass}"><span>${val}</span></div>`;
+  };
+
+  if(gs.splitActive?.[sid]){
+    // Two cells side-by-side: H2 left, H1 right
+    const h2=gs.hands?.[sid]?.hand2||[];
+    const h1=gs.hands?.[sid]?.hand1||[];
+    ind.className='seat-bottom-ind sind-split';
+    ind.innerHTML=mkScoreCell(h2,' h2-cell')+mkScoreCell(h1,' h1-cell');
+    ind.classList.remove('hidden');
+  } else {
+    ind.className='seat-bottom-ind sind-score';
+    const isBust=score(hand)>21;
+    const isBJHand=isNaturalBJ(hand)&&!gs.splitActive?.[sid];
+    if(isBust){ind.classList.add('sind-bust');ind.innerHTML='<span style="filter:grayscale(1);opacity:0.6;">💥</span>';}
+    else if(isBJHand){ind.classList.add('sind-bj');ind.innerHTML='<span>BJ</span>';}
+    else{const stood=gs.stoodSeats?.includes(sid);const val=scoreLabel(hand,stood);ind.innerHTML=`<span>${val}</span>`;}
+    ind.classList.remove('hidden');
   }
 }
 function renderCircle(sid,type,gs,canBet){
@@ -340,7 +945,7 @@ function renderCircle(sid,type,gs,canBet){
     if(noMain){circle.onclick=null;return;}
     else circle.classList.remove('sidebet-locked');
   }
-  if(ba){if(type==='main'){const oid=gs.seatOwners?.[sid];if(!oid)circle.onclick=()=>{sfxClick();socket.emit('claimSeat',{sid});};else if(oid===mySocketId)circle.onclick=()=>{sfxChip();socket.emit('placeBet',{sid,type:'main',amt:selectedChip});};}else if(gs.seatOwners?.[sid]===mySocketId){circle.onclick=()=>{sfxChip();socket.emit('placeBet',{sid,type,amt:selectedChip});};}else if(!gs.seatOwners?.[sid]){circle.onclick=()=>{sfxClick();socket.emit('claimSeat',{sid});};}}
+  if(ba){if(type==='main'){const oid=gs.seatOwners?.[sid];if(!oid)circle.onclick=()=>{sfxClick();socket.emit('claimSeat',{sid});};else if(oid===mySocketId)circle.onclick=()=>{sfxChip();const amt=bestChip(selectedChip);if(amt>0)socket.emit('placeBet',{sid,type:'main',amt});};}else if(gs.seatOwners?.[sid]===mySocketId){circle.onclick=()=>{sfxChip();const amt=bestChip(selectedChip);if(amt>0)socket.emit('placeBet',{sid,type,amt});};}else if(!gs.seatOwners?.[sid]){circle.onclick=()=>{sfxClick();socket.emit('claimSeat',{sid});};}}
   // Don't clear the win pill if it's already showing (let its own timeout handle removal)
   circle.querySelectorAll('.chip-stack').forEach(e=>e.remove());
   if(!circle.querySelector('.sidebet-win-pill'))circle.querySelectorAll('.sidebet-win-pill').forEach(e=>e.remove());
@@ -348,15 +953,18 @@ function renderCircle(sid,type,gs,canBet){
   if(wd&&type!=='main'){renderSideBetWinPill(circle,wd,`${sid}_${type}`,gs.gameStatus);return;}
   const isPlaying=['playing','dealer_turn','game_over'].includes(gs.gameStatus);
   if(amt>0){
-    renderChipStack(circle,amt,type==='main');
-    // If this is a sidebet and we're past dealing, dim it if it lost (no win entry)
-    if(type!=='main'&&isPlaying){
-      const wk2=type==='pp'?'pp':'sp';
-      const won=!!(gs.sideBetWins?.[sid]?.[wk2]);
-      circle.style.opacity=won?'1':'0.25';
-    } else {
-      circle.style.opacity='';
+    // During split, main-bet chip is shown in split-chips-row instead
+    if(type==='main'&&gs.splitActive?.[sid]){circle.style.opacity='0';circle.classList.remove('has-bet');}
+    else{
+      renderChipStack(circle,amt,type==='main');
+      if(type!=='main'&&isPlaying){
+        const wk2=type==='pp'?'pp':'sp';
+        const won=!!(gs.sideBetWins?.[sid]?.[wk2]);
+        circle.style.opacity=won?'1':'0.25';
+      } else {circle.style.opacity='';}
     }
+  } else {
+    circle.style.opacity='';
   }
   circle.classList.toggle('has-bet',amt>0);
 }
@@ -365,7 +973,7 @@ function renderSideBetWinPill(circle,wd,pillKey,gsStatus){
   renderChipStack(circle,wd.payout,false,true);
   circle.classList.add('has-bet');
   // Show the bouncing mult:1 pill only once, and only after playing phase begins
-  if(pillKey&&!shownSideBetPills.has(pillKey)&&['playing','dealer_turn','game_over'].includes(gsStatus)){
+  if(pillKey&&!shownSideBetPills.has(pillKey)&&(['playing','dealer_turn','game_over'].includes(gsStatus)||window._gsInsurancePhase)){
     shownSideBetPills.add(pillKey);
     const pill=document.createElement('div');pill.className='sidebet-win-pill';pill.textContent=`${wd.mult}:1`;
     circle.appendChild(pill);
@@ -381,11 +989,40 @@ function renderChipStack(circle,amt,isMain,isGold=false){
   const topBottom=4+(chips.length-1)*offsetY;const lbl=document.createElement('div');lbl.className='chip-stack-amt';if(isGold)lbl.style.color='#ffd700';lbl.style.bottom=(topBottom+chipW/2-9)+'px';lbl.style.top='auto';lbl.textContent=fmt(amt);stack.appendChild(lbl);circle.appendChild(stack);
 }
 function ensureSplitBetCircle(seatEl,sid,gs){
-  let sc=seatEl.querySelector('.split-bet-circle');
-  if(!gs.splitActive?.[sid]){if(sc)sc.remove();return;}
-  if(!sc){sc=document.createElement('div');sc.className='split-bet-circle';seatEl.querySelector('.betting-circles')?.appendChild(sc);}
-  sc.querySelectorAll('.chip-stack').forEach(e=>e.remove());
-  const sb=gs.splitBets?.[sid]||gs.bets?.[sid]?.main||0;if(sb>0)renderChipStack(sc,sb,true);
+  // Remove old single split-bet-circle (replaced by split-chips-row)
+  seatEl.querySelector('.split-bet-circle')?.remove();
+  // Also hide the main-bet circle chips during split (shown in split-chips-row instead)
+  const splitHandWrap=seatEl.querySelector('.split-hands');
+  let row=seatEl.querySelector('.split-chips-row');
+  if(!gs.splitActive?.[sid]){
+    row?.remove();
+    // Restore main-bet circle opacity
+    seatEl.querySelector('.bet-circle.main-bet')?.style.setProperty('opacity','');
+    return;
+  }
+  if(!splitHandWrap)return;
+  if(!row){
+    row=document.createElement('div');row.className='split-chips-row';
+    // Insert into seat element directly, after the player-hand div, before betting-circles
+    const playerHand=seatEl.querySelector('.player-hand');
+    const bettingCircles=seatEl.querySelector('.betting-circles');
+    if(bettingCircles){seatEl.insertBefore(row,bettingCircles);}
+    else if(playerHand){playerHand.after(row);}
+    else{seatEl.appendChild(row);}
+  }
+  row.innerHTML='';
+  // Left slot = hand2 bet (splitBets), Right slot = hand1 bet (bets.main)
+  const h2Amt=gs.splitBets?.[sid]||0;
+  const h1Amt=gs.bets?.[sid]?.main||0;
+  const mkSlot=(amt,label)=>{
+    const slot=document.createElement('div');slot.className='split-chip-slot';
+    const lbl=document.createElement('div');lbl.className='split-chip-label';lbl.textContent=label;
+    slot.appendChild(lbl);
+    if(amt>0){const circ=document.createElement('div');circ.className='split-bet-circle';renderChipStack(circ,amt,true);slot.appendChild(circ);}
+    return slot;
+  };
+  row.appendChild(mkSlot(h2Amt,'H2'));
+  row.appendChild(mkSlot(h1Amt,'H1'));
 }
 function renderHand(sid,gs){
   const el=$('hand-'+sid);if(!el)return;
@@ -403,7 +1040,7 @@ function renderHand(sid,gs){
       const hkIdx=hk==='hand1'?0:1;
       const isActive=hkIdx===(gs.splitHandIndex?.[sid]||0);
       let col=wrap.querySelector(`.split-col[data-hk="${hk}"]`);
-      if(!col){col=document.createElement('div');col.dataset.hk=hk;wrap.appendChild(col);const sp=document.createElement('div');sp.className='score-display split-score';sp.id=`score-${sid}-${hk}`;sp.innerHTML='<span class="bust-num"></span><span class="bust-icon">\ud83d\udca5</span>';sp.classList.add('hidden');const hd=document.createElement('div');hd.className='split-hand';hd.dataset.hk=hk;const ind=document.createElement('div');ind.className='split-indicator';ind.textContent=idx===0?'>':'<';col.appendChild(ind);col.appendChild(sp);col.appendChild(hd);}
+      if(!col){col=document.createElement('div');col.dataset.hk=hk;wrap.appendChild(col);const sp=document.createElement('div');sp.className='score-display split-score';sp.id=`score-${sid}-${hk}`;sp.innerHTML='<span class="bust-num"></span><span class="bust-icon">\ud83d\udca5</span>';sp.classList.add('hidden');const hd=document.createElement('div');hd.className='split-hand';hd.dataset.hk=hk;const ind=document.createElement('div');ind.className='split-indicator';col.appendChild(ind);col.appendChild(sp);col.appendChild(hd);}
       col.className=`split-col${isActive?' active-split-col':''}`;col.classList.toggle('active-turn-hand',hk==='hand1'?iHA_h1:iHA_h2);
       const hd=col.querySelector('.split-hand');if(hd){const ex=hd.querySelectorAll('.card').length;h.slice(ex).forEach(c=>{sfxCard();hd.appendChild(mkCard(c,true));});}
       const pill=col.querySelector('.split-score');
@@ -423,23 +1060,22 @@ function animateScoreUpdate(pill,newVal){
   if(pill.classList.contains('busted'))return;
   const id=pill.id;
   const ovr=_scoreOverride[id];
+  const strVal=String(newVal);
   if(ovr){
-    // An action override is set ('+', '−', '2×')
-    // If the value actually changed (card arrived), clear override and show new value
-    if(_prevScores[id]!==undefined&&newVal!==_prevScores[id]){
+    _prevScores[id]=newVal; // always track latest
+    // For hit/double: once value changes (card arrived), clear override and show new value
+    if(ovr.text!=='−'&&ovr.baseVal!==undefined&&strVal!==String(ovr.baseVal)){
       delete _scoreOverride[id];
-      _prevScores[id]=newVal;
-      bn.style.transition='opacity 0.2s';bn.style.opacity='0';
-      setTimeout(()=>{bn.textContent=newVal;bn.style.opacity='1';},200);
+      pill._animTok=(pill._animTok||0)+1;
+      const freshBn2=pill.querySelector('.bust-num');
+      if(freshBn2){freshBn2.style.transition='none';freshBn2.style.opacity='1';freshBn2.textContent=strVal;}
     }
-    // else value unchanged (stateUpdate before card arrived) — keep showing override
     return;
   }
-  if(_prevScores[id]===newVal){if(bn.textContent!==newVal){bn.textContent=newVal;}return;}
-  // Normal update — fade in new value
-  bn.style.transition='opacity 0.2s';bn.style.opacity='0';
-  setTimeout(()=>{bn.textContent=newVal;bn.style.opacity='1';},200);
   _prevScores[id]=newVal;
+  // Just set the value directly — no hiding, no opacity tricks during gameplay
+  bn.style.transition='none';bn.style.opacity='1';
+  bn.textContent=strVal;
 }
 function renderScore(sid,gs){
   const el=$('score-'+sid);if(!el)return;
@@ -447,14 +1083,21 @@ function renderScore(sid,gs){
   const hand=Array.isArray(gs.hands?.[sid])?gs.hands[sid]:[];
   if(!hand.length){el.classList.add('hidden');return;}
   const stood=gs.stoodSeats?.includes(sid);
-  if(score(hand)===21&&hand.length===2){
-    if(_prevScores[el.id]!=='BJ'){el.className='score-display bj-score';el.innerHTML='<span class="bust-num bj-text">BJ</span><span class="bust-icon">\ud83d\udca5</span>';el.classList.remove('hidden','busted','show-icon');_prevScores[el.id]='BJ';}return;
+  if(isNaturalBJ(hand)&&!gs.splitActive?.[sid]){
+    if(_prevScores[el.id]!=='BJ'){
+      el.className='score-display bj-score';
+      if(!el.querySelector('.bust-num')){el.innerHTML='<span class="bust-num"></span><span class="bust-icon">\ud83d\udca5</span>';}
+      const bnBJ=el.querySelector('.bust-num');if(bnBJ){bnBJ.className='bust-num bj-text';bnBJ.style.transition='none';bnBJ.style.opacity='1';bnBJ.textContent='BJ';}
+      el.classList.remove('hidden','busted','show-icon');_prevScores[el.id]='BJ';
+    }return;
   }
   // If already showing bust icon, freeze and do not update
   if(el.classList.contains('busted')&&el.classList.contains('show-icon'))return;
   el.className='score-display';const newVal=scoreLabel(hand,stood);
-  // Always rebuild innerHTML to clear any lingering bj-text gold color
-  el.innerHTML='<span class="bust-num"></span><span class="bust-icon">\ud83d\udca5</span>';
+  // Ensure inner structure exists (created once, never rebuilt)
+  if(!el.querySelector('.bust-num')){el.innerHTML='<span class="bust-num"></span><span class="bust-icon">\ud83d\udca5</span>';}
+  // Clear any bj-text styling without rebuilding
+  const bjSpan=el.querySelector('.bj-text');if(bjSpan){bjSpan.className='bust-num';bjSpan.style.color='';}
   el.classList.remove('hidden');animateScoreUpdate(el,newVal);
   if(score(hand)>21){el.classList.add('busted');setTimeout(()=>el.classList.add('show-icon'),800);}else el.classList.remove('busted','show-icon');
 }
@@ -463,7 +1106,7 @@ function renderBadges(sid,gs){
   const seatEl=$('seat-'+sid);if(!seatEl)return;
   seatEl.querySelectorAll('.result-badge').forEach(b=>b.remove());
   const badges=gs.badges?.[sid]||[],seen=new Set();
-  for(const b of badges){if(seen.has(b.cls))continue;seen.add(b.cls);if(b.cls==='bj'&&gs.gameStatus==='game_over'&&gs.seatOwners?.[sid]===mySocketId&&!bjSoundedSeats.has(sid)){sfxWin();bjSoundedSeats.add(sid);}if(b.cls==='win'&&gs.gameStatus==='game_over'&&gs.seatOwners?.[sid]===mySocketId)sfxWin();if(b.cls==='lose'&&b.text==='Bust')sfxBust();}
+  for(const b of badges){if(seen.has(b.cls))continue;seen.add(b.cls);if(b.cls==='bj'&&gs.gameStatus==='game_over'&&gs.seatOwners?.[sid]===mySocketId&&!bjSoundedSeats.has(sid)){const bjPush=badges.some(x=>x.cls==='push');if(!bjPush)sfxWin();bjSoundedSeats.add(sid);}if(b.cls==='win'&&gs.gameStatus==='game_over'&&gs.seatOwners?.[sid]===mySocketId)sfxWin();if(b.cls==='lose'&&b.text==='Bust')sfxBust();}
   // No text labels — show winnings as extra chips on the main-bet circle
   const mc=seatEl.querySelector('.bet-circle.main-bet');if(!mc)return;
   mc.querySelectorAll('.circle-win-label').forEach(e=>e.remove());
@@ -473,7 +1116,8 @@ function renderBadges(sid,gs){
   if(!main)return;
   // Calculate profit amount to show as extra chips
   let totalPayout=0,isGold=false;
-  if(hasBJ){totalPayout=Math.floor(main*2.5);isGold=true;}  // BJ pays 2.5x total
+  if(hasBJ&&hasPush){return;}                                // BJ vs dealer BJ = push, chips unchanged
+  if(hasBJ){totalPayout=Math.floor(main*2.5);isGold=true;}  // BJ wins 3:2
   else if(hasWin){totalPayout=main*2;}                       // Win pays 2x total
   else if(hasPush){return;}                                  // Push: chips unchanged
   // else lose: nothing to show
@@ -516,16 +1160,42 @@ function mkCard(c,animate){
 }
 function renderDealer(gs){
   const el=$('dealer-hand');if(!el)return;const hand=gs.hands?.dealer||[];const wasHidden=el.querySelector('.card-back');
-  if(gs.dealerRevealed&&wasHidden){el.innerHTML='';hand.forEach(c=>el.appendChild(mkCard(c,false)));}
+  if(gs.dealerRevealed&&wasHidden){
+    // Flip the hidden card with animation, then show face
+    const holeSlot=wasHidden;
+    sfxFlip();
+    holeSlot.classList.add('card-flip-anim');
+    setTimeout(()=>{
+      el.innerHTML='';
+      hand.forEach((c,i)=>{
+        const card=mkCard(c,false);
+        // The hole card (index 1) gets a subtle entrance
+        if(i===1)card.classList.add('card-deal-anim');
+        el.appendChild(card);
+      });
+    },300); // flip mid-point at 300ms
+  }
   else if(!gs.dealerRevealed){const ex=el.querySelectorAll('.card,.card-back').length;if(hand.length<ex){el.innerHTML='';}else{hand.slice(ex).forEach((c,i)=>{if(ex+i===1){const b=document.createElement('div');b.className='card-back card-deal-anim';el.appendChild(b);}else el.appendChild(mkCard(c,true));});}}
   else{const ex=el.querySelectorAll('.card,.card-back').length;hand.slice(ex).forEach(c=>el.appendChild(mkCard(c,true)));}
-  const sc=$('dealer-score');if(sc&&hand.length>0){const dh=gs.dealerRevealed?hand:[hand[0]],ds=score(dh);sc.innerHTML=`<span class="bust-num">${ds}</span><span class="bust-icon">\ud83d\udca5</span>`;sc.classList.remove('hidden');if(gs.dealerRevealed&&ds>21){sc.classList.add('busted');setTimeout(()=>sc.classList.add('show-icon'),800);}else sc.classList.remove('busted','show-icon');}else if(sc)sc.classList.add('hidden');
+  const sc=$('dealer-score');if(sc&&hand.length>0){
+    const dh=gs.dealerRevealed?hand:[hand[0]],ds=score(dh);
+    const dealerBJ=gs.dealerRevealed&&isNaturalBJ(hand);
+    const label=dealerBJ?'BJ':String(ds);
+    if(!sc.querySelector('.bust-num')){sc.innerHTML='<span class="bust-num"></span><span class="bust-icon">\ud83d\udca5</span>';}
+    const bn=sc.querySelector('.bust-num');if(bn)bn.textContent=label;
+    if(dealerBJ){sc.className='score-display bj-score';bn&&(bn.className='bust-num bj-text');}
+    else{sc.className='score-display';bn&&(bn.className='bust-num');}
+    sc.classList.remove('hidden');
+    if(gs.dealerRevealed&&ds>21){sc.classList.add('busted');setTimeout(()=>sc.classList.add('show-icon'),800);}
+    else sc.classList.remove('busted','show-icon');
+  }else if(sc)sc.classList.add('hidden');
 }
 
 // ── Play Buttons ───────────────────────────────────────────────
 function showPlayButtons(sid,handIdx){
   const gs=prevGs;if(!gs)return;
   const hand=gs.splitActive?.[sid]?gs.hands?.[sid]?.['hand'+(handIdx+1)]||[]:gs.hands?.[sid]||[];
+  const isSplitAces=gs.splitFromAces?.[sid]===true;
   const betForHand = gs.splitActive?.[sid]
     ? (activeTurnHandIdx===0 ? gs.bets?.[sid]?.main : gs.splitBets?.[sid]||gs.bets?.[sid]?.main)||0
     : gs.bets?.[sid]?.main||0;
@@ -536,8 +1206,9 @@ function showPlayButtons(sid,handIdx){
   const dbl=$('btn-double'),spl=$('btn-split'),hit=$('btn-hit'),std=$('btn-stand');
   // Layout: double(left-flank) | hit | stand | split(right-flank)
   // Use CSS order to keep hit/stand always centered regardless of which flanks are visible
-  if(dbl){dbl.classList.toggle('hidden',!canDouble);dbl.style.order=canDouble?'1':'0';}
-  if(hit){hit.style.order='2';
+  if(dbl){dbl.classList.toggle('hidden',!canDouble||isSplitAces);dbl.style.order=(canDouble&&!isSplitAces)?'1':'0';}
+  // Split aces: hide hit button entirely
+  if(hit){hit.classList.toggle('hidden',isSplitAces);hit.style.order='2';
     // Show 2× on hit button icon when this seat has been doubled
     const isDoubled=gs.doubled?.[sid]===true;
     const icon=hit.querySelector('.cubic-icon');if(icon)icon.textContent=isDoubled?'2×':'+';
@@ -550,13 +1221,18 @@ function showPlayButtons(sid,handIdx){
   const pb=$('play-buttons');
   if(pb&&canDouble&&!canSplit){const sp=document.createElement('div');sp.id='pb-spacer-right';sp.style.cssText='width:86px;height:86px;order:4;flex-shrink:0;';pb.appendChild(sp);}
   if(pb&&canSplit&&!canDouble){const sp=document.createElement('div');sp.id='pb-spacer-left';sp.style.cssText='width:86px;height:86px;order:1;flex-shrink:0;';pb.prepend(sp);}
+  ['btn-hit','btn-stand','btn-double','btn-split'].forEach(id=>{const b=$(id);if(b)b.disabled=false;});
   const pbEl=$('play-buttons');if(pbEl){pbEl.classList.remove('betting-hidden');pbEl.classList.remove('hidden');}actionPending=false;setTimeout(positionCountdownBorder,50);
 }
 function doAction(action){
   if(!activeTurnSid||actionPending)return;
-  actionPending=true;stopCountdown();
+  actionPending=true;
+  _countdownGen++;_pendingCountdownSid=null;
+  stopCountdown();
+  ['btn-hit','btn-stand','btn-double','btn-split'].forEach(id=>{const b=$(id);if(b)b.disabled=true;});
   const pb=$('play-buttons');
-  sfxClick();
+  if(action==='hit'||action==='double')sfxHit();
+  else if(action==='stand')sfxStand();
   // Set score pill override immediately on action
   {
     const gs=prevGs;
@@ -564,23 +1240,29 @@ function doAction(action){
     const pillId=gs?.splitActive?.[sid]?`score-${sid}-hand${handIdx+1}`:`score-${sid}`;
     const pill=$(pillId);
     if(pill&&!pill.classList.contains('busted')){
-      const bn=pill.querySelector('.bust-num');
+      // Always re-query bn fresh — never hold stale reference
+      const getBn=()=>pill.querySelector('.bust-num');
+      const bn=getBn();
       if(bn){
         const overrideText=action==='hit'?'+':action==='stand'?'−':action==='double'?'2×':null;
         if(overrideText){
-          _scoreOverride[pillId]={text:overrideText};
-          bn.style.transition='opacity 0.15s';bn.style.opacity='0';
-          setTimeout(()=>{bn.textContent=overrideText;bn.style.opacity='0.75';},150);
+          const baseVal=_prevScores[pillId];
+          const restoreVal=baseVal!==undefined?String(baseVal):(bn.textContent||'');
+          _scoreOverride[pillId]={text:overrideText,baseVal,restoreVal};
+          pill._animTok=(pill._animTok||0)+1;
+          const myTok=pill._animTok;
+          // Show symbol immediately, always re-query to get live node
+          const liveBn=getBn();
+          if(liveBn){liveBn.style.transition='none';liveBn.style.opacity='1';liveBn.textContent=overrideText;}
           if(action==='stand'){
-            // For stand: show '−' briefly then fade back to number
+            // After 650ms restore the score — re-query bn fresh to avoid stale refs
             setTimeout(()=>{
-              bn.style.opacity='0';
-              setTimeout(()=>{
-                delete _scoreOverride[pillId];
-                bn.textContent=bn.textContent===overrideText?(_prevScores[pillId]||''):bn.textContent;
-                bn.style.opacity='1';
-              },300);
-            },800);
+              if(pill._animTok!==myTok)return;
+              delete _scoreOverride[pillId];
+              const rv=_prevScores[pillId]!==undefined?String(_prevScores[pillId]):restoreVal;
+              const freshBn=pill.querySelector('.bust-num');
+              if(freshBn){freshBn.style.transition='none';freshBn.style.opacity='1';freshBn.textContent=rv;}
+            },650);
           }
         }
       }
@@ -611,10 +1293,18 @@ document.querySelectorAll('.leave-seat-btn').forEach(btn=>{btn.addEventListener(
 
 // ── Insurance per seat ─────────────────────────────────────────
 function showInsuranceForSeat(sid,cost){
+  // Cancel any running insurance countdown from previous seat
+  stopCountdown();
+  document.getElementById('ins-countdown-svg')?.remove();
   document.querySelectorAll('.seat.insurance-highlight').forEach(e=>e.classList.remove('insurance-highlight'));
   const seatEl=$('seat-'+sid);if(seatEl)seatEl.classList.add('insurance-highlight');
   const modal=$('insurance-modal');
-  modal.innerHTML=`<div id="insurance-title">\ud83c\udccf Seat ${sid} \u2014 Insurance?</div><div id="insurance-subtitle">Costs \u20ac${cost} \u00b7 Pays 2:1</div><div class="ins-shield-row"><button class="ins-shield ins-shield-yes" id="ins-yes-btn"><svg viewBox="0 0 60 70" fill="none" width="70" height="82"><path d="M30 4 L56 14 L56 36 C56 52 30 66 30 66 C30 66 4 52 4 36 L4 14 Z" fill="rgba(46,125,50,0.85)" stroke="#4caf50" stroke-width="2"/><polyline points="18,35 27,45 44,26" stroke="white" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg><span>YES</span></button><button class="ins-shield ins-shield-no" id="ins-no-btn"><svg viewBox="0 0 60 70" fill="none" width="70" height="82"><path d="M30 4 L56 14 L56 36 C56 52 30 66 30 66 C30 66 4 52 4 36 L4 14 Z" fill="rgba(198,40,40,0.85)" stroke="#ef5350" stroke-width="2"/><line x1="19" y1="25" x2="41" y2="47" stroke="white" stroke-width="4" stroke-linecap="round"/><line x1="41" y1="25" x2="19" y2="47" stroke="white" stroke-width="4" stroke-linecap="round"/></svg><span>NO</span></button></div>`;
+  const canAfford=myWallet>=cost;
+  const disabledStyle=canAfford?'':'opacity:0.3;pointer-events:none;';
+  const cantAffordNote=canAfford?'':`<div id="ins-cant-afford">Not enough balance (\u20ac${cost} needed)</div>`;
+  const YES_SVG='<svg viewBox="0 0 40 46" fill="none" width="34" height="40"><path d="M20 2 L37 9 L37 24 C37 35 20 44 20 44 C20 44 3 35 3 24 L3 9 Z" fill="rgba(255,255,255,0.22)" stroke="rgba(255,255,255,0.8)" stroke-width="2"/><polyline points="12,24 18,31 29,18" stroke="white" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>';
+  const NO_SVG='<svg viewBox="0 0 40 46" fill="none" width="34" height="40"><path d="M20 2 L37 9 L37 24 C37 35 20 44 20 44 C20 44 3 35 3 24 L3 9 Z" fill="rgba(255,255,255,0.22)" stroke="rgba(255,255,255,0.8)" stroke-width="2"/><line x1="14" y1="17" x2="26" y2="29" stroke="white" stroke-width="3" stroke-linecap="round"/><line x1="26" y1="17" x2="14" y2="29" stroke="white" stroke-width="3" stroke-linecap="round"/></svg>';
+  modal.innerHTML=`<div id="insurance-label">Insurance? \u00b7 Seat ${sid} \u00b7 \u20ac${cost}</div>${cantAffordNote}<div class="ins-btn-row"><button class="ins-cubic ins-cubic-yes${canAfford?'':' ins-cant-afford-btn'}" id="ins-yes-btn">${YES_SVG}<span class="ins-lbl">YES</span></button><button class="ins-cubic ins-cubic-no" id="ins-no-btn">${NO_SVG}<span class="ins-lbl">NO</span></button></div>`;
   function respond(insure){document.querySelectorAll('.seat.insurance-highlight').forEach(e=>e.classList.remove('insurance-highlight'));hide('insurance-modal');stopCountdown();document.getElementById('ins-countdown-svg')?.remove();socket.emit('insuranceResponse',{sid,insure});}
   $('ins-yes-btn').addEventListener('click',()=>respond(true),{once:true});
   $('ins-no-btn').addEventListener('click',()=>respond(false),{once:true});
@@ -628,7 +1318,7 @@ function showInsuranceForSeat(sid,cost){
     const pad=14, x=rect.left-pad, y=rect.top-pad;
     const w=rect.width+pad*2, h=rect.height+pad*2, rx=26;
     const mx=w/2;
-    const pathD=`M ${mx} 0 L ${w-rx} 0 Q ${w} 0 ${w} ${rx} L ${w} ${h-rx} Q ${w} ${h} ${w-rx} ${h} L ${rx} ${h} Q 0 ${h} 0 ${h-rx} L 0 ${rx} Q 0 0 ${rx} 0 Z`;
+    const pathD=`M ${mx} 0 L ${rx} 0 Q 0 0 0 ${rx} L 0 ${h-rx} Q 0 ${h} ${rx} ${h} L ${w-rx} ${h} Q ${w} ${h} ${w} ${h-rx} L ${w} ${rx} Q ${w} 0 ${w-rx} 0 L ${mx} 0`;
     const perim=2*(w-2*rx)+2*(h-2*rx)+2*Math.PI*rx;
     const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');
     svg.id='ins-countdown-svg';
@@ -669,4 +1359,79 @@ function openHistoryPanel(){let panel=$('history-panel');if(!panel){panel=docume
 function renderHistoryList(container){const history=loadHistory();if(!history.length){container.innerHTML='<div class="history-empty">No rounds yet.</div>';return;}const byDay={};history.forEach(r=>{const d=r.time.slice(0,10);if(!byDay[d])byDay[d]=[];byDay[d].push(r);});const days=Object.keys(byDay).sort((a,b)=>b.localeCompare(a));container.innerHTML=days.map(day=>{const rounds=byDay[day],net=rounds.reduce((s,r)=>s+r.netCash,0);const dateStr=new Date(day+'T12:00:00').toLocaleDateString('en-GB',{weekday:'long',day:'numeric',month:'long',year:'numeric'});return`<div class="hist-day-row" data-day="${day}"><span class="hist-arrow">\u203a</span><span class="hist-date">${dateStr}</span><span class="hist-net ${net>=0?'hist-pos':'hist-neg'}">${net>=0?'+':''}\u20ac${Math.abs(net).toFixed(2)}</span></div><div class="hist-day-rounds hidden" id="hdr-${day.replace(/-/g,'_')}"></div>`;}).join('');container.querySelectorAll('.hist-day-row').forEach(row=>{row.addEventListener('click',()=>{const day=row.dataset.day,re=$(`hdr-${day.replace(/-/g,'_')}`);if(!re)return;re.classList.toggle('hidden');if(!re.classList.contains('hidden'))renderDayRounds(re,byDay[day]);});});}
 function renderDayRounds(container,rounds){container.innerHTML=rounds.map(r=>{const t=new Date(r.time).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});const nc=r.netCash>=0?'hist-pos':'hist-neg';return`<div class="hist-round-row" data-id="${r.id}"><div class="hist-round-top"><span class="hist-round-table">${r.tableName}</span><span class="hist-round-net ${nc}">${r.netCash>=0?'+':''}\u20ac${Math.abs(r.netCash).toFixed(2)}</span></div><div class="hist-round-sub">${t} \u00b7 Room ${r.roomCode} \u00b7 Bet \u20ac${r.totalBet}</div></div>`;}).join('');container.querySelectorAll('.hist-round-row').forEach(row=>{row.addEventListener('click',()=>{const id=parseInt(row.dataset.id),entry=loadHistory().find(r=>r.id===id);if(entry)openRoundDetail(entry);});});}
 function mkHistCard(c){const el=document.createElement('div');el.className='hd-card-img'+(suitIsRed(c.suit)?' red':'');el.innerHTML=`<span class="card-val">${c.value}</span><span class="card-suit">${{S:'\u2660',H:'\u2665',D:'\u2666',C:'\u2663'}[c.suit]||''}</span>`;return el;}
-function openRoundDetail(entry){const panel=$('history-panel');if(!panel)return;const body=$('history-body');if(!body)return;const t=new Date(entry.time).toLocaleString('en-GB',{weekday:'short',day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'});const nc=entry.netCash>=0?'hist-pos':'hist-neg';const dealerRow=document.createElement('div');dealerRow.className='hd-cards-row';(entry.dealerCards||[]).forEach(c=>dealerRow.appendChild(mkHistCard(c)));const seatsDiv=document.createElement('div');seatsDiv.className='hd-seats';entry.seats.forEach(s=>{const sd=document.createElement('div');sd.className='hd-seat';sd.innerHTML=`<div class="hd-seat-label">Seat ${s.sid}</div>`;s.hands.forEach((h,hi)=>{const hd=document.createElement('div');hd.className='hd-hand';hd.innerHTML=`<div class="hd-section-label">Hand ${hi+1}</div>`;const cr=document.createElement('div');cr.className='hd-cards-row';h.cards.forEach((c,ci)=>{const img=mkHistCard(c);if(ci===h.cards.length-1){const isBust=h.result?.toLowerCase().includes('bust');img.classList.add(isBust?'hd-decision-stand':'hd-decision-hit');const wrap=document.createElement('div');wrap.style.cssText='display:flex;flex-direction:column;align-items:center;gap:2px;';const ml=document.createElement('div');ml.className='hd-move-label '+(isBust?'hd-move-stand':'hd-move-hit');ml.textContent=h.result||'';wrap.appendChild(img);wrap.appendChild(ml);cr.appendChild(wrap);}else cr.appendChild(img);});const rc=h.result?.toLowerCase().includes('win')?'res-win':h.result?.toLowerCase().includes('push')?'res-push':'res-lose';hd.appendChild(cr);hd.innerHTML+=`<div class="hd-result ${rc}">${h.result||'\u2014'} \u00b7 ${h.score}</div>`;sd.appendChild(hd);});const bd=document.createElement('div');bd.className='hd-bets-table';const pp=s.ppBet>0?`<div class="hd-bet-line"><span>PP</span><span>\u20ac${s.ppBet}</span><span class="${s.ppNet>=0?'hist-pos':'hist-neg'}">${s.ppNet>=0?'+':''}\u20ac${Math.abs(s.ppNet)}</span></div>`:'';const sp=s.spBet>0?`<div class="hd-bet-line"><span>21+3</span><span>\u20ac${s.spBet}</span><span class="${s.spNet>=0?'hist-pos':'hist-neg'}">${s.spNet>=0?'+':''}\u20ac${Math.abs(s.spNet)}</span></div>`:'';bd.innerHTML=`<div class="hd-bet-line hd-bet-header"><span>Bet</span><span>Amount</span><span>Net</span></div><div class="hd-bet-line"><span>Main</span><span>\u20ac${s.mainBet}</span><span class="${s.mainNet>=0?'hist-pos':'hist-neg'}">${s.mainNet>=0?'+':''}\u20ac${Math.abs(s.mainNet)}</span></div>${pp}${sp}`;sd.appendChild(bd);seatsDiv.appendChild(sd);});body.innerHTML='';const back=document.createElement('div');back.className='hist-detail-back-row';back.innerHTML='<button class="hist-detail-back" id="hd-back">\u2039 Back</button>';const meta=document.createElement('div');meta.className='hist-detail-meta';meta.innerHTML=`<b>${entry.tableName}</b><br>${t} \u00b7 Room <b>${entry.roomCode}</b><br>Bet \u20ac${entry.totalBet} \u00a0 Net: <b class="${nc}">${entry.netCash>=0?'+':''}\u20ac${Math.abs(entry.netCash).toFixed(2)}</b>`;const ds=document.createElement('div');ds.className='hd-dealer-row';ds.innerHTML=`<span class="hd-section-label">Dealer \u00b7 ${score(entry.dealerCards||[])}</span>`;ds.appendChild(dealerRow);body.appendChild(back);body.appendChild(meta);body.appendChild(ds);body.appendChild(seatsDiv);$('hd-back').addEventListener('click',()=>renderHistoryList(body));}
+function openRoundDetail(entry){
+  const panel=$('history-panel');if(!panel)return;
+  const body=$('history-body');if(!body)return;
+  const t=new Date(entry.time).toLocaleString('en-GB',{weekday:'short',day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'});
+  const nc=entry.netCash>=0?'hist-pos':'hist-neg';
+  body.innerHTML='';
+  // Back button
+  const back=document.createElement('div');back.className='hist-detail-back-row';
+  back.innerHTML='<button class="hist-detail-back" id="hd-back">\u2039 Back</button>';
+  body.appendChild(back);
+  // Meta
+  const meta=document.createElement('div');meta.className='hist-detail-meta';
+  meta.innerHTML=`<b>${entry.tableName}</b><br>${t} \u00b7 Room <b>${entry.roomCode}</b><br>Bet \u20ac${entry.totalBet} &nbsp; Net: <b class="${nc}">${entry.netCash>=0?'+':''}\u20ac${Math.abs(entry.netCash).toFixed(2)}</b>`;
+  body.appendChild(meta);
+  // Table seat map
+  if(entry.seatMap){
+    const mapDiv=document.createElement('div');mapDiv.className='hd-table-map';
+    mapDiv.innerHTML='<div class="hd-table-map-title">Seats</div>';
+    const row=document.createElement('div');row.className='hd-table-row';
+    entry.seatMap.forEach(s=>{
+      const dot=document.createElement('div');
+      dot.className='hd-seat-dot'+(s.mine?' mine':s.taken?' taken':'');
+      dot.textContent=s.n;
+      row.appendChild(dot);
+    });
+    mapDiv.appendChild(row);
+    body.appendChild(mapDiv);
+  }
+  // Dealer hand — above seats, cards centered
+  const ds=document.createElement('div');ds.className='hd-dealer-row';
+  const dScore=score(entry.dealerCards||[]);
+  ds.innerHTML=`<span class="hd-section-label">Dealer${dScore>21?' \u00b7 Bust':dScore?' \u00b7 '+dScore:''}</span>`;
+  const dealerRow=document.createElement('div');dealerRow.className='hd-cards-row hd-cards-centered';
+  (entry.dealerCards||[]).forEach(c=>dealerRow.appendChild(mkHistCard(c)));
+  ds.appendChild(dealerRow);body.appendChild(ds);
+  // Seats
+  const seatsDiv=document.createElement('div');seatsDiv.className='hd-seats';
+  entry.seats.forEach(s=>{
+    const sd=document.createElement('div');sd.className='hd-seat';
+    sd.innerHTML=`<div class="hd-seat-label">Seat ${s.sid}</div>`;
+    s.hands.forEach((h,hi)=>{
+      const hd=document.createElement('div');hd.className='hd-hand';
+      if(s.hands.length>1)hd.innerHTML=`<div class="hd-section-label">Hand ${hi+1}</div>`;
+      const cr=document.createElement('div');cr.className='hd-cards-row';
+      h.cards.forEach((c,ci)=>{
+        const img=mkHistCard(c);
+        const dec=h.decisions?.[ci];
+        if(dec&&dec!=='stand'){
+          const chip=document.createElement('span');
+          chip.className='hd-move-chip '+(dec==='hit'?'hit-chip':dec==='double'?'double-chip':'bust-chip');
+          chip.textContent=dec==='hit'?'+':dec==='double'?'2×':'✕';
+          const wrap=document.createElement('div');wrap.style.cssText='display:flex;flex-direction:column;align-items:center;gap:1px;';
+          wrap.appendChild(img);wrap.appendChild(chip);cr.appendChild(wrap);
+        } else {
+          cr.appendChild(img);
+        }
+      });
+      // Show stand marker after cards if player stood (not busted)
+      if(h.stood){const sc=document.createElement('span');sc.className='hd-move-chip stand-chip';sc.textContent='−';cr.appendChild(sc);}
+      const rc=h.result?.toLowerCase().includes('win')?'res-win':h.result?.toLowerCase().includes('push')?'res-push':'res-lose';
+      const resLabel=h.result?.toLowerCase().includes('win')?'Win':h.result?.toLowerCase().includes('push')?'Push':'Lose';
+      hd.appendChild(cr);
+      hd.innerHTML+=`<div class="hd-result ${rc}">${resLabel}</div>`;
+      sd.appendChild(hd);
+    });
+    // Bets table
+    const bd=document.createElement('div');bd.className='hd-bets-table';
+    const fmtNet=(n)=>`<span class="${n>=0?'hist-pos':'hist-neg'}">${n>=0?'+':''}\u20ac${Math.abs(n)}</span>`;
+    const pp=s.ppBet>0?`<div class="hd-bet-line"><span>PP</span><span>\u20ac${s.ppBet}</span>${fmtNet(s.ppNet)}</div>`:'';
+    const sp2=s.spBet>0?`<div class="hd-bet-line"><span>21+3</span><span>\u20ac${s.spBet}</span>${fmtNet(s.spNet)}</div>`:'';
+    bd.innerHTML=`<div class="hd-bet-line hd-bet-header"><span>Bet</span><span>Amount</span><span>Net</span></div><div class="hd-bet-line"><span>Main</span><span>\u20ac${s.mainBet}</span>${fmtNet(s.mainNet)}</div>${pp}${sp2}`;
+    sd.appendChild(bd);seatsDiv.appendChild(sd);
+  });
+  body.appendChild(seatsDiv);
+  $('hd-back').addEventListener('click',()=>renderHistoryList(body));
+}
