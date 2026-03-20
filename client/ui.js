@@ -1,6 +1,8 @@
 // =============================================================
-// BLACKJACK MULTIPLAYER — client.js  v8
+// ui.js — Client UI: socket events, rendering, sounds, timers.
+// Depends on game.js being loaded first (CHIP_COLORS, score, etc.)
 // =============================================================
+const myToken = loadToken(); // loaded from game.js
 const socket = io();
 let mySocketId=null,myName='',myWallet=5000,roomCode=null,selectedChip=100;
 let activeTurnSid=null,activeTurnHandIdx=0,prevGs=null,winOverlayShown=false;
@@ -13,12 +15,7 @@ let _pendingCountdownSid=null,_countdownGen=0;
 const _prevScores={};
 const _scoreOverride={}; // pillId → {text, locked} — persists until real value arrives
 const _sindOverride={}; // sid → {html, tok, timer} — sind-N action symbol override
-const CHIP_COLORS={1:'#ffe050,#c8a000',2:'#5090f0,#1a50c8',5:'#e83030,#9a0808',10:'#40d8f8,#0898c0',25:'#80e040,#3a9000',50:'#f08020,#b04000',100:'#282828,#080808',200:'#f060b0,#b01868',500:'#9050d0,#4a0890',1000:'#2858c8,#0a2880',2000:'#182898,#080850',5000:'#b01820,#680008',10000:'#187028,#083810'};
-function bestChip(preferred){
-  // If wallet can cover preferred, use it; otherwise find largest chip <= wallet
-  const DENOMS=[10000,5000,2000,1000,500,200,100,50,25,10,5,2,1];
-  if(myWallet>=preferred)return preferred;
-  for(const d of DENOMS){if(myWallet>=d)return d;}
+
   return 0; // broke
 }
 const AudioCtx=window.AudioContext||window.webkitAudioContext;let actx=null;
@@ -190,27 +187,8 @@ function sfxDeal(){
 const $=id=>document.getElementById(id);
 const show=id=>$(id)?.classList.remove('hidden');
 const hide=id=>$(id)?.classList.add('hidden');
-function fmt(n){return n>=1000?(n/1000).toFixed(n%1000===0?0:1)+'k':String(n);}
-function isNaturalBJ(h){
-  // True BJ = exactly 2 cards, one Ace, one 10-value, NOT from a split
-  if(!Array.isArray(h)||h.length!==2)return false;
-  const vals=h.map(c=>c.value);
-  const hasAce=vals.includes('A');
-  const hasTen=vals.some(v=>['10','J','Q','K'].includes(v));
-  return hasAce&&hasTen;
-}
-function score(h){if(!Array.isArray(h)||!h.length)return 0;let t=0,a=0;for(const c of h){if(['J','Q','K'].includes(c.value))t+=10;else if(c.value==='A'){a++;t+=11;}else t+=parseInt(c.value)||0;}while(t>21&&a>0){t-=10;a--;}return t;}
-function scoreLabel(h,stood){if(!Array.isArray(h)||!h.length)return'';let t=0,a=0;for(const c of h){if(['J','Q','K'].includes(c.value))t+=10;else if(c.value==='A'){a++;t+=11;}else t+=parseInt(c.value)||0;}while(t>21&&a>0){t-=10;a--;}if(a>0&&t!==21&&!stood)return`${t-10}/${t}`;return String(t);}
-function cardNum(c){if(['J','Q','K'].includes(c.value))return 10;if(c.value==='A')return 11;return parseInt(c.value);}
-function cardStr(c){return c.value+({S:'\u2660',H:'\u2665',D:'\u2666',C:'\u2663'}[c.suit]||'');}
-function suitIsRed(s){return s==='H'||s==='D';}
-function loadName(){try{return JSON.parse(localStorage.getItem('kk_name')||'null')||'';}catch(e){return'';}}
-function saveName(n){try{localStorage.setItem('kk_name',JSON.stringify(n));}catch(e){}}
-function loadHistory(){try{return JSON.parse(localStorage.getItem('kk_history')||'[]');}catch(e){return[];}}
-function loadToken(){try{let t=localStorage.getItem('kk_token');if(!t){t=Math.random().toString(36).slice(2)+Math.random().toString(36).slice(2);localStorage.setItem('kk_token',t);}return t;}catch(e){return'anon_'+Date.now();}}
-const myToken=loadToken();
-function saveHistory(h){try{localStorage.setItem('kk_history',JSON.stringify(h));}catch(e){}}
-function pushRound(e){const h=loadHistory();h.unshift(e);if(h.length>500)h.length=500;saveHistory(h);}
+
+
 // ── Pre-fill saved name ─────────────────────────────────────────
 (function(){
   const s=loadName();
@@ -525,7 +503,6 @@ socket.on('yourTurn',({sid,handIdx,ownerId})=>{
 });
 socket.on('dealVote',({ready,needed,readyIds})=>{const b=$('btn-deal');if(!b)return;if(readyIds.includes(mySocketId)){b.textContent=`Waiting\u2026 (${ready}/${needed})`;b.disabled=true;b.style.opacity='0.6';}else{b.textContent=`Deal (${ready}/${needed} ready)`;b.disabled=false;b.style.opacity='1';}});
 
-
 // ── Action turn timer circle (below play-buttons) ──────────────
 const _AT_R=22, _AT_CIRC=2*Math.PI*_AT_R; // r=22 → circumference≈138.23
 function _positionActionTimer(){
@@ -712,50 +689,9 @@ function trackRound(gs,players){
   if(gs.gameStatus==='betting'&&currentRoundLog)currentRoundLog=null;
 }
 function buildAndSaveHistory(gs,players){
-  const mySeats=Object.entries(gs.seatOwners||{}).filter(([,id])=>id===mySocketId).map(([s])=>s);
-  if(!mySeats.length)return;
-  const ordered=[...mySeats].sort((a,b)=>Number(b)-Number(a));
-  let totalBet=0,netCash=0;
-  // Build seat map: all 5 slots, which are mine
-  const allSeats=['1','2','3','4','5'];
-  const seatMap=allSeats.map(n=>({n,mine:mySeats.includes(n),taken:!!(gs.seatOwners?.[n])}));
-  const seats=ordered.map(sid=>{
-    const main=gs.bets?.[sid]?.main||0,pp=gs.bets?.[sid]?.pp||0,sp=gs.bets?.[sid]?.sp||0;
-    totalBet+=main+pp+sp;
-    const badges=gs.badges?.[sid]||[];
-    const hasBJ=badges.some(b=>b.cls==='bj'),hasWin=badges.some(b=>b.cls==='win'),hasPush=badges.some(b=>b.cls==='push');
-    const isBJPush=hasBJ&&hasPush;
-    const mr=isBJPush?main:hasBJ?Math.floor(main*2.5):hasWin?main*2:hasPush?main:0;
-    const mainNet=mr-main;
-    const ppWin=gs.sideBetWins?.[sid]?.pp?.payout||0,spWin=gs.sideBetWins?.[sid]?.sp?.payout||0;
-    netCash+=mainNet+(ppWin-pp)+(spWin-sp);
-    const isDoubledSeat=gs.doubled?.[sid]||false;
-    const mkHandEntry=(cards,resultBadge,hk)=>{
-      const isBust=resultBadge?.toLowerCase().includes('bust');
-      // Determine if this hand was doubled
-      const handDoubled=hk?gs.doubledHands?.[sid]?.[hk]:isDoubledSeat;
-      // Per-card decisions: first 2 = null (dealt), rest = hit or double
-      const decisions=cards.map((c,i)=>{
-        if(i<2)return null;
-        // If exactly 3 cards and hand was doubled, that 3rd card is the double card
-        if(handDoubled&&cards.length===3&&i===2)return'double';
-        return'hit';
-      });
-      return{cards,decisions,stood:!isBust,result:resultBadge||'',score:score(cards)};
-    };
-    let hands=[];
-    if(gs.splitActive?.[sid]){
-      ['hand1','hand2'].forEach((hk,i)=>{
-        const cards=gs.hands?.[sid]?.[hk]||[];
-        hands.push(mkHandEntry(cards,badges[i]?.text,hk));
-      });
-    } else {
-      const cards=Array.isArray(gs.hands?.[sid])?gs.hands[sid]:[];
-      hands.push(mkHandEntry(cards,badges[0]?.text));
-    }
-    return{sid,mainBet:main,ppBet:pp,spBet:sp,mainNet,ppNet:ppWin-pp,spNet:spWin-sp,ppWin,spWin,hands};
-  });
-  pushRound({id:Date.now(),time:new Date().toISOString(),roomCode,tableName:'Kikikov BlackJack',totalBet,netCash,seats,seatMap,dealerCards:gs.hands?.dealer||[]});
+  const entry=buildRoundHistoryEntry(gs,players,mySocketId,roomCode);
+  if(entry){pushRound(entry);}
+
 }
 
 // ── Render State ───────────────────────────────────────────────
