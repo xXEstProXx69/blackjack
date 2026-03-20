@@ -211,12 +211,28 @@ function offerInsurance(code) {
   const { gs } = room;
   gs.insurancePhase = true;
   gs.insuranceResponses = {};
-  // Build per-seat queue: each seat that has a main bet gets its own prompt
-  // Order right-to-left: seat 5 first, seat 1 last (match play order)
-  gs.insuranceQueue = Object.entries(gs.seatOwners)
-    .filter(([sid]) => (gs.bets[sid]?.main || 0) > 0)
+
+  // Helper: does this seat have blackjack?
+  const hasBJ = (sid) => {
+    const hand = gs.hands[sid];
+    return Array.isArray(hand) && hand.length === 2 && score(hand) === 21;
+  };
+
+  // Build per-seat queue: skip seats that already have BJ
+  const eligibleSeats = Object.entries(gs.seatOwners)
+    .filter(([sid]) => (gs.bets[sid]?.main || 0) > 0 && !hasBJ(sid))
     .sort(([a],[b]) => Number(b) - Number(a))
     .map(([sid, ownerId]) => ({ sid, ownerId }));
+
+  // 1v1 special case: if there's only one active seat and it has BJ → skip insurance entirely
+  if (gs.activeSeats.length === 1 && hasBJ(gs.activeSeats[0])) {
+    gs.insurancePhase = false;
+    broadcast(code);
+    checkBJ(code);
+    return;
+  }
+
+  gs.insuranceQueue = eligibleSeats;
   gs.insuranceQueueIndex = 0;
   broadcast(code);
   advanceInsuranceQueue(code);
@@ -246,9 +262,13 @@ function checkBJ(code) {
   const room = rooms[code];
   const { gs, players } = room;
 
+  // Only resolve dealer BJ early if upcard is Ace (insurance was offered).
+  // If dealer has BJ with a 10/face showing, the game continues; dealer
+  // reveals naturally at dealer_turn and resolveMain handles it via dBust/ds.
+  const upCard = gs.hands.dealer[0];
   const dBJ = score(gs.hands.dealer) === 21 && gs.hands.dealer.length === 2;
 
-  if (dBJ) {
+  if (dBJ && upCard && upCard.value === 'A') {
     for (const sid of gs.activeSeats) {
       const ins = gs.insurance[sid] || 0;
       if (ins > 0) {
@@ -264,12 +284,9 @@ function checkBJ(code) {
     const hand = gs.hands[sid];
     const pBJ  = Array.isArray(hand) && hand.length === 2 && score(hand) === 21;
     if (pBJ) {
-      const player = players[gs.seatOwners[sid]];
-      if (player) {
-        player.wallet += Math.floor(gs.bets[sid].main * 2.5);
-        if (!gs.badges[sid]) gs.badges[sid] = [];
-        gs.badges[sid].push({ cls:'bj', text:'Blackjack!' });
-      }
+      // Mark badge only — payout happens in resolveMain after dealer plays
+      if (!gs.badges[sid]) gs.badges[sid] = [];
+      gs.badges[sid].push({ cls:'bj', text:'Blackjack!' });
     }
   }
 
@@ -365,11 +382,15 @@ function resolveMain(code, dealerBJ) {
     const hasBJ = gs.badges[sid].some(b => b.cls === 'bj');
     if (hasBJ) {
       if (dealerBJ) {
+        // BJ vs dealer BJ = push: return original bet
         player.wallet += gs.bets[sid].main;
         totalWon += gs.bets[sid].main;
         gs.badges[sid].push({ cls:'push', text:'Push' });
       } else {
-        totalWon += Math.floor(gs.bets[sid].main * 2.5);
+        // Player BJ wins 3:2
+        const bjPayout = Math.floor(gs.bets[sid].main * 2.5);
+        player.wallet += bjPayout;
+        totalWon += bjPayout;
       }
       continue;
     }
@@ -510,23 +531,30 @@ function assignNewHost(code) {
 }
 
 io.on('connection', (socket) => {
-  socket.on('createRoom', ({ name, wallet }) => {
+  socket.on('createRoom', ({ name, wallet, token }) => {
     const code = makeCode();
-    rooms[code] = { code, gs: makeGs(), players: {}, betTimerTimeout: null, hostId: socket.id, joinCounter: 0 };
+    rooms[code] = { code, gs: makeGs(), players: {}, betTimerTimeout: null, hostId: socket.id, joinCounter: 0, banList: new Set() };
     rooms[code].gs.gameStatus = 'betting';
     rooms[code].gs.deck = buildDeck();
     rooms[code].players[socket.id] = { name, wallet: wallet||5000, totalBet:0, isHost:true, joinOrder:0 };
     socket.join(code);
     socket.data.code = code;
     socket.data.name = name;
+    socket.data.token = token || socket.id;
     socket.emit('roomJoined', { code, socketId: socket.id, isHost: true });
     broadcast(code);
   });
 
-  socket.on('joinRoom', ({ code, name, wallet }) => {
+  socket.on('joinRoom', ({ code, name, wallet, token }) => {
     const room = rooms[code];
     if (!room) { socket.emit('roomError', 'Room not found'); return; }
     if (Object.keys(room.players).length >= 5) { socket.emit('roomError', 'Room is full'); return; }
+    const playerToken = token || socket.id;
+    if (room.banList && room.banList.has(playerToken)) {
+      socket.emit('banned');
+      return;
+    }
+    socket.data.token = playerToken;
     room.joinCounter = (room.joinCounter||0) + 1;
     room.players[socket.id] = { name, wallet: wallet||5000, totalBet:0, isHost:false, joinOrder: room.joinCounter };
     socket.join(code);
@@ -559,6 +587,31 @@ io.on('connection', (socket) => {
     broadcast(code);
   });
 
+  socket.on('banPlayer', ({ targetId }) => {
+    const code = socket.data.code;
+    const room = rooms[code];
+    if (!room || room.hostId !== socket.id) return;
+    if (!['betting','idle'].includes(room.gs.gameStatus)) return;
+    if (targetId === socket.id) return;
+    const target = room.players[targetId];
+    if (!target) return;
+    // Find the target's token from connected sockets
+    const targetSocket = [...io.sockets.sockets.values()].find(s => s.id === targetId);
+    const banToken = targetSocket?.data?.token || targetId;
+    room.banList.add(banToken);
+    // Also kick them now
+    for (const [sid, ownerId] of Object.entries(room.gs.seatOwners)) {
+      if (ownerId === targetId) {
+        delete room.gs.seatOwners[sid];
+        room.gs.activeSeats = room.gs.activeSeats.filter(s => s !== sid);
+        room.gs.bets[sid] = { main:0, pp:0, sp:0 };
+      }
+    }
+    delete room.players[targetId];
+    io.to(targetId).emit('banned');
+    broadcast(code);
+  });
+
   socket.on('changeName', ({ name }) => {
     const code = socket.data.code;
     const room = rooms[code];
@@ -578,10 +631,32 @@ io.on('connection', (socket) => {
     const code = socket.data.code;
     const room = rooms[code];
     if (!room) return;
-    const { gs } = room;
+    const { gs, players } = room;
     if (!['betting','idle'].includes(gs.gameStatus)) return;
     if (gs.seatOwners[sid]) return;
     gs.seatOwners[sid] = socket.id;
+
+    // Mirror bets from any seat this player already owns
+    const player = players[socket.id];
+    const existingSeats = Object.entries(gs.seatOwners)
+      .filter(([s, id]) => id === socket.id && s !== sid)
+      .map(([s]) => s);
+    if (existingSeats.length > 0 && player) {
+      const srcSid = existingSeats[0]; // mirror from first owned seat
+      for (const type of ['main', 'pp', 'sp']) {
+        const amt = gs.bets[srcSid]?.[type] || 0;
+        if (amt > 0 && player.wallet >= amt) {
+          gs.bets[sid][type] = amt;
+          player.wallet -= amt;
+          player.totalBet += amt;
+          gs.betHistory.push({ socketId: socket.id, sid, type, amt, groupId: 'mirror_'+Date.now() });
+        }
+      }
+      if ((gs.bets[sid].main || 0) > 0 && !gs.activeSeats.includes(sid)) {
+        gs.activeSeats.push(sid);
+      }
+    }
+
     broadcast(code);
   });
 
