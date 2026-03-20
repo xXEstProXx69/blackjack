@@ -190,6 +190,22 @@ html,body{width:100%;height:100%;overflow:hidden;font-family:'Rajdhani',sans-ser
 @keyframes winChipDrop{from{opacity:0;transform:translateX(-50%) translateY(-20px) scale(0.7);}to{opacity:1;transform:translateX(-50%) scale(1);}}
 .win-chip-stack .chip-stack-amt{color:#fff;font-size:.65rem;background:rgba(0,0,0,0.9);border-color:rgba(255,255,255,0.35);}
 .split-bet-circle{width:66px;height:66px;border-radius:50%;border:2px dashed rgba(100,200,255,0.6);background:rgba(100,200,255,0.08);position:relative;display:flex;align-items:center;justify-content:center;flex-shrink:0;overflow:visible;}
+.split-chips-row{display:flex;justify-content:space-between;align-items:flex-end;width:100%;padding:0 4px;gap:4px;margin:4px 0 2px;}
+.split-chip-slot{display:flex;flex-direction:column;align-items:center;gap:2px;flex:1;}
+.split-chip-label{font-family:'Rajdhani',sans-serif;font-size:.55rem;font-weight:700;letter-spacing:.1em;color:rgba(100,200,255,0.6);text-transform:uppercase;}
+
+/* History detail enhancements */
+.hd-table-map{padding:10px 20px 6px;border-bottom:1px solid rgba(255,255,255,0.06);}
+.hd-table-map-title{font-family:'Rajdhani',sans-serif;font-size:.65rem;font-weight:700;letter-spacing:.15em;text-transform:uppercase;color:rgba(255,255,255,0.3);margin-bottom:8px;}
+.hd-table-row{display:flex;align-items:center;justify-content:center;gap:6px;margin-bottom:6px;}
+.hd-seat-dot{width:28px;height:28px;border-radius:50%;border:2px solid rgba(255,255,255,0.25);background:rgba(255,255,255,0.06);display:flex;align-items:center;justify-content:center;font-family:'Rajdhani',sans-serif;font-weight:700;font-size:.72rem;color:rgba(255,255,255,0.4);flex-shrink:0;transition:all .2s;}
+.hd-seat-dot.mine{border-color:#ffd700;background:rgba(255,215,0,0.15);color:#ffd700;}
+.hd-seat-dot.taken{border-color:rgba(255,255,255,0.4);color:rgba(255,255,255,0.6);}
+.hd-move-chip{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:50%;font-size:.6rem;font-weight:900;margin-left:3px;flex-shrink:0;}
+.hd-move-chip.hit-chip{background:rgba(46,125,50,0.85);color:#fff;}
+.hd-move-chip.stand-chip{background:rgba(198,40,40,0.85);color:#fff;}
+.hd-move-chip.double-chip{background:rgba(255,152,0,0.85);color:#fff;}
+.hd-move-chip.bust-chip{background:rgba(80,80,80,0.85);color:#aaa;}
 
 /* ── CARDS ── */
 .card{width:64px;height:90px;border-radius:7px;overflow:hidden;box-shadow:3px 5px 14px rgba(0,0,0,0.7);border:1px solid rgba(255,255,255,0.18);flex-shrink:0;margin-left:-10px;background-size:100% 100%;background-repeat:no-repeat;background-color:#fff;}

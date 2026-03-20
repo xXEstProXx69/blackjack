@@ -7,6 +7,7 @@ let activeTurnSid=null,activeTurnHandIdx=0,prevGs=null,winOverlayShown=false;
 let actionPending=false,sfxVolume=0.4,currentRoundLog=null;
 let countdownRafId=null,countdownStart=0,countdownTotal=15000;
 let autoplayOn=false,autoplayThreshold=17,bjSoundedSeats=new Set(),shownSideBetPills=new Set();
+let _pendingCountdownSid=null,_countdownGen=0;
 const _prevScores={};
 const _scoreOverride={}; // pillId → {text, locked} — persists until real value arrives
 const CHIP_COLORS={1:'#e8e8e8,#b0b0b0',2:'#d0d0d0,#888',5:'#e03030,#900',10:'#1a7ad4,#0a4a9a',25:'#2da84e,#155a28',50:'#c07020,#804010',100:'#222,#111',200:'#b050f0,#6000b0',500:'#8030a0,#400060',1000:'#e0b000,#a07000',2000:'#e07030,#c03000',5000:'#10b0b0,#006060',10000:'#f050a0,#900040'};
@@ -74,10 +75,13 @@ socket.on('timerCancel',()=>hide('bet-timer-wrap'));
 socket.on('yourTurn',({sid,handIdx,ownerId})=>{
   activeTurnSid=sid;activeTurnHandIdx=handIdx||0;actionPending=false;stopCountdown();
   if(ownerId===mySocketId){
-    // Small delay to let any in-progress card animation finish before showing buttons
+    _pendingCountdownSid=sid;
+    const myGen=++_countdownGen;
     setTimeout(()=>{
+      if(_countdownGen!==myGen)return;
       showPlayButtons(sid,handIdx||0);
       setTimeout(()=>{
+        if(_countdownGen!==myGen)return;
         const pb=$('play-buttons');
         if(pb&&!pb.classList.contains('betting-hidden')&&!pb.classList.contains('hidden'))
           startCountdown(15000,()=>autoPlayAction(sid,handIdx||0));
@@ -88,7 +92,7 @@ socket.on('yourTurn',({sid,handIdx,ownerId})=>{
   }
 });
 socket.on('dealVote',({ready,needed,readyIds})=>{const b=$('btn-deal');if(!b)return;if(readyIds.includes(mySocketId)){b.textContent=`Waiting\u2026 (${ready}/${needed})`;b.disabled=true;b.style.opacity='0.6';}else{b.textContent=`Deal (${ready}/${needed} ready)`;b.disabled=false;b.style.opacity='1';}});
-socket.on('stateUpdate',({gs})=>{if(gs.gameStatus==='betting'){winOverlayShown=false;activeTurnSid=null;actionPending=false;bjSoundedSeats.clear();shownSideBetPills.clear();stopCountdown();hide('play-buttons');const db=$('btn-deal');if(db){db.disabled=false;db.style.opacity='1';db.textContent='DEAL';}document.querySelectorAll('.card,.card-back').forEach(c=>c.classList.add('fly-out'));stopDealCountdown();document.querySelectorAll('.circle-win-label,.win-chip-stack,.chip-stack,.sidebet-win-pill').forEach(e=>e.remove());Object.keys(_prevScores).forEach(k=>delete _prevScores[k]);Object.keys(_scoreOverride).forEach(k=>delete _scoreOverride[k]);}});
+
 
 // ── Smooth countdown rectangle ─────────────────────────────────
 function startCountdown(durationMs,onTimeout){
@@ -246,6 +250,9 @@ function buildAndSaveHistory(gs,players){
   if(!mySeats.length)return;
   const ordered=[...mySeats].sort((a,b)=>Number(b)-Number(a));
   let totalBet=0,netCash=0;
+  // Build seat map: all 5 slots, which are mine
+  const allSeats=['1','2','3','4','5'];
+  const seatMap=allSeats.map(n=>({n,mine:mySeats.includes(n),taken:!!(gs.seatOwners?.[n])}));
   const seats=ordered.map(sid=>{
     const main=gs.bets?.[sid]?.main||0,pp=gs.bets?.[sid]?.pp||0,sp=gs.bets?.[sid]?.sp||0;
     totalBet+=main+pp+sp;
@@ -255,16 +262,54 @@ function buildAndSaveHistory(gs,players){
     const mainNet=mr-main;
     const ppWin=gs.sideBetWins?.[sid]?.pp?.payout||0,spWin=gs.sideBetWins?.[sid]?.sp?.payout||0;
     netCash+=mainNet+(ppWin-pp)+(spWin-sp);
+    const mkHandEntry=(cards,resultBadge)=>{
+      const isBust=resultBadge?.toLowerCase().includes('bust');
+      const isBJ=resultBadge?.toLowerCase().includes('blackjack');
+      // Build per-card decision markers
+      const decisions=cards.map((c,i)=>{
+        if(i<2)return null; // dealt
+        if(i===cards.length-1){
+          if(isBust)return'bust';
+          if(gs.doubled?.[sid]||gs.doubledHands?.[sid]?.hand1||gs.doubledHands?.[sid]?.hand2)return'double';
+          return'stand'; // last card = stood after this
+        }
+        return'hit';
+      });
+      return{cards,decisions,result:resultBadge||'',score:score(cards)};
+    };
     let hands=[];
-    if(gs.splitActive?.[sid]){['hand1','hand2'].forEach((hk,i)=>{const cards=gs.hands?.[sid]?.[hk]||[];hands.push({cards,result:badges[i]?.text||'',score:score(cards)});});}
-    else{const cards=Array.isArray(gs.hands?.[sid])?gs.hands[sid]:[];hands.push({cards,result:badges[0]?.text||'',score:score(cards)});}
+    if(gs.splitActive?.[sid]){
+      ['hand1','hand2'].forEach((hk,i)=>{
+        const cards=gs.hands?.[sid]?.[hk]||[];
+        hands.push(mkHandEntry(cards,badges[i]?.text));
+      });
+    } else {
+      const cards=Array.isArray(gs.hands?.[sid])?gs.hands[sid]:[];
+      hands.push(mkHandEntry(cards,badges[0]?.text));
+    }
     return{sid,mainBet:main,ppBet:pp,spBet:sp,mainNet,ppNet:ppWin-pp,spNet:spWin-sp,ppWin,spWin,hands};
   });
-  pushRound({id:Date.now(),time:new Date().toISOString(),roomCode,tableName:'Kikikov BlackJack',totalBet,netCash,seats,dealerCards:gs.hands?.dealer||[]});
+  pushRound({id:Date.now(),time:new Date().toISOString(),roomCode,tableName:'Kikikov BlackJack',totalBet,netCash,seats,seatMap,dealerCards:gs.hands?.dealer||[]});
 }
 
 // ── Render State ───────────────────────────────────────────────
 function renderState(gs,players,hostId){
+  // Betting phase reset — runs BEFORE chip rendering so re-render adds chips back correctly
+  if(gs.gameStatus==='betting'){
+    winOverlayShown=false;activeTurnSid=null;actionPending=false;
+    bjSoundedSeats.clear();shownSideBetPills.clear();stopCountdown();
+    hide('play-buttons');
+    const db=$('btn-deal');if(db){db.disabled=false;db.style.opacity='1';db.textContent='DEAL';}
+    document.querySelectorAll('.card,.card-back').forEach(c=>c.classList.add('fly-out'));
+    stopDealCountdown();
+    document.querySelectorAll('.circle-win-label,.win-chip-stack,.sidebet-win-pill').forEach(e=>e.remove());
+    document.querySelectorAll('.chip-stack').forEach(e=>e.remove());
+    Object.keys(_prevScores).forEach(k=>delete _prevScores[k]);
+    Object.keys(_scoreOverride).forEach(k=>delete _scoreOverride[k]);
+    _pendingCountdownSid=null;
+    // Cancel any stale score animation tokens on all pills
+    document.querySelectorAll('.score-display,.split-score').forEach(p=>{p._animTok=(p._animTok||0)+1;});
+  }
   const pList=$('players-list');
   if(pList)pList.innerHTML=Object.entries(players).map(([id,p])=>`<div class="player-entry ${id===mySocketId?'me':''}"><span class="pe-name">${id===hostId?'\ud83d\udc51 ':''}${p.name}</span><span class="pe-wallet">\u20ac${p.wallet.toLocaleString()}</span></div>`).join('');
   const me=players[mySocketId];
@@ -381,11 +426,36 @@ function renderChipStack(circle,amt,isMain,isGold=false){
   const topBottom=4+(chips.length-1)*offsetY;const lbl=document.createElement('div');lbl.className='chip-stack-amt';if(isGold)lbl.style.color='#ffd700';lbl.style.bottom=(topBottom+chipW/2-9)+'px';lbl.style.top='auto';lbl.textContent=fmt(amt);stack.appendChild(lbl);circle.appendChild(stack);
 }
 function ensureSplitBetCircle(seatEl,sid,gs){
-  let sc=seatEl.querySelector('.split-bet-circle');
-  if(!gs.splitActive?.[sid]){if(sc)sc.remove();return;}
-  if(!sc){sc=document.createElement('div');sc.className='split-bet-circle';seatEl.querySelector('.betting-circles')?.appendChild(sc);}
-  sc.querySelectorAll('.chip-stack').forEach(e=>e.remove());
-  const sb=gs.splitBets?.[sid]||gs.bets?.[sid]?.main||0;if(sb>0)renderChipStack(sc,sb,true);
+  // Remove old single split-bet-circle (replaced by split-chips-row)
+  seatEl.querySelector('.split-bet-circle')?.remove();
+  // Also hide the main-bet circle chips during split (shown in split-chips-row instead)
+  const splitHandWrap=seatEl.querySelector('.split-hands');
+  let row=seatEl.querySelector('.split-chips-row');
+  if(!gs.splitActive?.[sid]){
+    row?.remove();
+    // Restore main-bet circle opacity
+    seatEl.querySelector('.bet-circle.main-bet')?.style.setProperty('opacity','');
+    return;
+  }
+  if(!splitHandWrap)return;
+  if(!row){
+    row=document.createElement('div');row.className='split-chips-row';
+    // Insert after split-hands but before betting-circles
+    splitHandWrap.after(row);
+  }
+  row.innerHTML='';
+  // Left slot = hand2 bet (splitBets), Right slot = hand1 bet (bets.main)
+  const h2Amt=gs.splitBets?.[sid]||0;
+  const h1Amt=gs.bets?.[sid]?.main||0;
+  const mkSlot=(amt,label)=>{
+    const slot=document.createElement('div');slot.className='split-chip-slot';
+    const lbl=document.createElement('div');lbl.className='split-chip-label';lbl.textContent=label;
+    slot.appendChild(lbl);
+    if(amt>0){const circ=document.createElement('div');circ.className='split-bet-circle';renderChipStack(circ,amt,true);slot.appendChild(circ);}
+    return slot;
+  };
+  row.appendChild(mkSlot(h2Amt,'H2'));
+  row.appendChild(mkSlot(h1Amt,'H1'));
 }
 function renderHand(sid,gs){
   const el=$('hand-'+sid);if(!el)return;
@@ -424,22 +494,30 @@ function animateScoreUpdate(pill,newVal){
   const id=pill.id;
   const ovr=_scoreOverride[id];
   if(ovr){
-    // An action override is set ('+', '−', '2×')
-    // If the value actually changed (card arrived), clear override and show new value
-    if(_prevScores[id]!==undefined&&newVal!==_prevScores[id]){
+    // Keep tracking the latest server value for accurate restores
+    _prevScores[id]=newVal;
+    // For hit/double: when value actually changes (card arrived), clear override
+    if(ovr.text!=='−'&&ovr.baseVal!==undefined&&String(newVal)!==String(ovr.baseVal)){
       delete _scoreOverride[id];
-      _prevScores[id]=newVal;
+      const tok=++pill._animTok;
       bn.style.transition='opacity 0.2s';bn.style.opacity='0';
-      setTimeout(()=>{bn.textContent=newVal;bn.style.opacity='1';},200);
+      setTimeout(()=>{if(pill._animTok===tok){bn.textContent=newVal;bn.style.transition='opacity 0.2s';bn.style.opacity='1';}},200);
     }
-    // else value unchanged (stateUpdate before card arrived) — keep showing override
     return;
   }
-  if(_prevScores[id]===newVal){if(bn.textContent!==newVal){bn.textContent=newVal;}return;}
-  // Normal update — fade in new value
-  bn.style.transition='opacity 0.2s';bn.style.opacity='0';
-  setTimeout(()=>{bn.textContent=newVal;bn.style.opacity='1';},200);
+  // Always update text if empty, even when value hasn't changed
+  const strVal=String(newVal);
+  if(_prevScores[id]===newVal&&bn.textContent===strVal)return;
   _prevScores[id]=newVal;
+  if(bn.textContent===''||bn.style.opacity==='0'){
+    // Pill is empty/invisible — just set directly
+    bn.textContent=strVal;
+    bn.style.transition='opacity 0.2s';bn.style.opacity='1';
+    return;
+  }
+  const tok=++pill._animTok;
+  bn.style.transition='opacity 0.2s';bn.style.opacity='0';
+  setTimeout(()=>{if(pill._animTok===tok){bn.textContent=strVal;bn.style.transition='opacity 0.2s';bn.style.opacity='1';}},200);
 }
 function renderScore(sid,gs){
   const el=$('score-'+sid);if(!el)return;
@@ -550,11 +628,16 @@ function showPlayButtons(sid,handIdx){
   const pb=$('play-buttons');
   if(pb&&canDouble&&!canSplit){const sp=document.createElement('div');sp.id='pb-spacer-right';sp.style.cssText='width:86px;height:86px;order:4;flex-shrink:0;';pb.appendChild(sp);}
   if(pb&&canSplit&&!canDouble){const sp=document.createElement('div');sp.id='pb-spacer-left';sp.style.cssText='width:86px;height:86px;order:1;flex-shrink:0;';pb.prepend(sp);}
+  ['btn-hit','btn-stand','btn-double','btn-split'].forEach(id=>{const b=$(id);if(b)b.disabled=false;});
   const pbEl=$('play-buttons');if(pbEl){pbEl.classList.remove('betting-hidden');pbEl.classList.remove('hidden');}actionPending=false;setTimeout(positionCountdownBorder,50);
 }
 function doAction(action){
   if(!activeTurnSid||actionPending)return;
-  actionPending=true;stopCountdown();
+  actionPending=true;
+  _countdownGen++;_pendingCountdownSid=null;
+  stopCountdown();
+  // Immediately disable all action buttons to prevent spam
+  ['btn-hit','btn-stand','btn-double','btn-split'].forEach(id=>{const b=$(id);if(b)b.disabled=true;});
   const pb=$('play-buttons');
   sfxClick();
   // Set score pill override immediately on action
@@ -568,19 +651,22 @@ function doAction(action){
       if(bn){
         const overrideText=action==='hit'?'+':action==='stand'?'−':action==='double'?'2×':null;
         if(overrideText){
-          _scoreOverride[pillId]={text:overrideText};
+          // Capture BEFORE any DOM changes
+          const baseVal=_prevScores[pillId];
+          const restoreVal=baseVal!==undefined?String(baseVal):(bn.textContent||'');
+          _scoreOverride[pillId]={text:overrideText,baseVal,restoreVal};
+          pill._animTok=(pill._animTok||0)+1;
+          const myTok=pill._animTok;
           bn.style.transition='opacity 0.15s';bn.style.opacity='0';
-          setTimeout(()=>{bn.textContent=overrideText;bn.style.opacity='0.75';},150);
+          setTimeout(()=>{if(pill._animTok!==myTok)return;bn.textContent=overrideText;bn.style.transition='';bn.style.opacity='0.75';},150);
           if(action==='stand'){
-            // For stand: show '−' briefly then fade back to number
             setTimeout(()=>{
-              bn.style.opacity='0';
-              setTimeout(()=>{
-                delete _scoreOverride[pillId];
-                bn.textContent=bn.textContent===overrideText?(_prevScores[pillId]||''):bn.textContent;
-                bn.style.opacity='1';
-              },300);
-            },800);
+              if(pill._animTok!==myTok)return;
+              delete _scoreOverride[pillId];
+              const rv=_prevScores[pillId]!==undefined?String(_prevScores[pillId]):restoreVal;
+              bn.style.transition='opacity 0.2s';bn.style.opacity='0';
+              setTimeout(()=>{if(pill._animTok!==myTok)return;bn.textContent=rv;bn.style.transition='opacity 0.2s';bn.style.opacity='1';},220);
+            },900);
           }
         }
       }
@@ -628,7 +714,7 @@ function showInsuranceForSeat(sid,cost){
     const pad=14, x=rect.left-pad, y=rect.top-pad;
     const w=rect.width+pad*2, h=rect.height+pad*2, rx=26;
     const mx=w/2;
-    const pathD=`M ${mx} 0 L ${w-rx} 0 Q ${w} 0 ${w} ${rx} L ${w} ${h-rx} Q ${w} ${h} ${w-rx} ${h} L ${rx} ${h} Q 0 ${h} 0 ${h-rx} L 0 ${rx} Q 0 0 ${rx} 0 Z`;
+    const pathD=`M ${mx} 0 L ${rx} 0 Q 0 0 0 ${rx} L 0 ${h-rx} Q 0 ${h} ${rx} ${h} L ${w-rx} ${h} Q ${w} ${h} ${w} ${h-rx} L ${w} ${rx} Q ${w} 0 ${w-rx} 0 L ${mx} 0`;
     const perim=2*(w-2*rx)+2*(h-2*rx)+2*Math.PI*rx;
     const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');
     svg.id='ins-countdown-svg';
@@ -669,4 +755,76 @@ function openHistoryPanel(){let panel=$('history-panel');if(!panel){panel=docume
 function renderHistoryList(container){const history=loadHistory();if(!history.length){container.innerHTML='<div class="history-empty">No rounds yet.</div>';return;}const byDay={};history.forEach(r=>{const d=r.time.slice(0,10);if(!byDay[d])byDay[d]=[];byDay[d].push(r);});const days=Object.keys(byDay).sort((a,b)=>b.localeCompare(a));container.innerHTML=days.map(day=>{const rounds=byDay[day],net=rounds.reduce((s,r)=>s+r.netCash,0);const dateStr=new Date(day+'T12:00:00').toLocaleDateString('en-GB',{weekday:'long',day:'numeric',month:'long',year:'numeric'});return`<div class="hist-day-row" data-day="${day}"><span class="hist-arrow">\u203a</span><span class="hist-date">${dateStr}</span><span class="hist-net ${net>=0?'hist-pos':'hist-neg'}">${net>=0?'+':''}\u20ac${Math.abs(net).toFixed(2)}</span></div><div class="hist-day-rounds hidden" id="hdr-${day.replace(/-/g,'_')}"></div>`;}).join('');container.querySelectorAll('.hist-day-row').forEach(row=>{row.addEventListener('click',()=>{const day=row.dataset.day,re=$(`hdr-${day.replace(/-/g,'_')}`);if(!re)return;re.classList.toggle('hidden');if(!re.classList.contains('hidden'))renderDayRounds(re,byDay[day]);});});}
 function renderDayRounds(container,rounds){container.innerHTML=rounds.map(r=>{const t=new Date(r.time).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});const nc=r.netCash>=0?'hist-pos':'hist-neg';return`<div class="hist-round-row" data-id="${r.id}"><div class="hist-round-top"><span class="hist-round-table">${r.tableName}</span><span class="hist-round-net ${nc}">${r.netCash>=0?'+':''}\u20ac${Math.abs(r.netCash).toFixed(2)}</span></div><div class="hist-round-sub">${t} \u00b7 Room ${r.roomCode} \u00b7 Bet \u20ac${r.totalBet}</div></div>`;}).join('');container.querySelectorAll('.hist-round-row').forEach(row=>{row.addEventListener('click',()=>{const id=parseInt(row.dataset.id),entry=loadHistory().find(r=>r.id===id);if(entry)openRoundDetail(entry);});});}
 function mkHistCard(c){const el=document.createElement('div');el.className='hd-card-img'+(suitIsRed(c.suit)?' red':'');el.innerHTML=`<span class="card-val">${c.value}</span><span class="card-suit">${{S:'\u2660',H:'\u2665',D:'\u2666',C:'\u2663'}[c.suit]||''}</span>`;return el;}
-function openRoundDetail(entry){const panel=$('history-panel');if(!panel)return;const body=$('history-body');if(!body)return;const t=new Date(entry.time).toLocaleString('en-GB',{weekday:'short',day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'});const nc=entry.netCash>=0?'hist-pos':'hist-neg';const dealerRow=document.createElement('div');dealerRow.className='hd-cards-row';(entry.dealerCards||[]).forEach(c=>dealerRow.appendChild(mkHistCard(c)));const seatsDiv=document.createElement('div');seatsDiv.className='hd-seats';entry.seats.forEach(s=>{const sd=document.createElement('div');sd.className='hd-seat';sd.innerHTML=`<div class="hd-seat-label">Seat ${s.sid}</div>`;s.hands.forEach((h,hi)=>{const hd=document.createElement('div');hd.className='hd-hand';hd.innerHTML=`<div class="hd-section-label">Hand ${hi+1}</div>`;const cr=document.createElement('div');cr.className='hd-cards-row';h.cards.forEach((c,ci)=>{const img=mkHistCard(c);if(ci===h.cards.length-1){const isBust=h.result?.toLowerCase().includes('bust');img.classList.add(isBust?'hd-decision-stand':'hd-decision-hit');const wrap=document.createElement('div');wrap.style.cssText='display:flex;flex-direction:column;align-items:center;gap:2px;';const ml=document.createElement('div');ml.className='hd-move-label '+(isBust?'hd-move-stand':'hd-move-hit');ml.textContent=h.result||'';wrap.appendChild(img);wrap.appendChild(ml);cr.appendChild(wrap);}else cr.appendChild(img);});const rc=h.result?.toLowerCase().includes('win')?'res-win':h.result?.toLowerCase().includes('push')?'res-push':'res-lose';hd.appendChild(cr);hd.innerHTML+=`<div class="hd-result ${rc}">${h.result||'\u2014'} \u00b7 ${h.score}</div>`;sd.appendChild(hd);});const bd=document.createElement('div');bd.className='hd-bets-table';const pp=s.ppBet>0?`<div class="hd-bet-line"><span>PP</span><span>\u20ac${s.ppBet}</span><span class="${s.ppNet>=0?'hist-pos':'hist-neg'}">${s.ppNet>=0?'+':''}\u20ac${Math.abs(s.ppNet)}</span></div>`:'';const sp=s.spBet>0?`<div class="hd-bet-line"><span>21+3</span><span>\u20ac${s.spBet}</span><span class="${s.spNet>=0?'hist-pos':'hist-neg'}">${s.spNet>=0?'+':''}\u20ac${Math.abs(s.spNet)}</span></div>`:'';bd.innerHTML=`<div class="hd-bet-line hd-bet-header"><span>Bet</span><span>Amount</span><span>Net</span></div><div class="hd-bet-line"><span>Main</span><span>\u20ac${s.mainBet}</span><span class="${s.mainNet>=0?'hist-pos':'hist-neg'}">${s.mainNet>=0?'+':''}\u20ac${Math.abs(s.mainNet)}</span></div>${pp}${sp}`;sd.appendChild(bd);seatsDiv.appendChild(sd);});body.innerHTML='';const back=document.createElement('div');back.className='hist-detail-back-row';back.innerHTML='<button class="hist-detail-back" id="hd-back">\u2039 Back</button>';const meta=document.createElement('div');meta.className='hist-detail-meta';meta.innerHTML=`<b>${entry.tableName}</b><br>${t} \u00b7 Room <b>${entry.roomCode}</b><br>Bet \u20ac${entry.totalBet} \u00a0 Net: <b class="${nc}">${entry.netCash>=0?'+':''}\u20ac${Math.abs(entry.netCash).toFixed(2)}</b>`;const ds=document.createElement('div');ds.className='hd-dealer-row';ds.innerHTML=`<span class="hd-section-label">Dealer \u00b7 ${score(entry.dealerCards||[])}</span>`;ds.appendChild(dealerRow);body.appendChild(back);body.appendChild(meta);body.appendChild(ds);body.appendChild(seatsDiv);$('hd-back').addEventListener('click',()=>renderHistoryList(body));}
+function openRoundDetail(entry){
+  const panel=$('history-panel');if(!panel)return;
+  const body=$('history-body');if(!body)return;
+  const t=new Date(entry.time).toLocaleString('en-GB',{weekday:'short',day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'});
+  const nc=entry.netCash>=0?'hist-pos':'hist-neg';
+  body.innerHTML='';
+  // Back button
+  const back=document.createElement('div');back.className='hist-detail-back-row';
+  back.innerHTML='<button class="hist-detail-back" id="hd-back">\u2039 Back</button>';
+  body.appendChild(back);
+  // Meta
+  const meta=document.createElement('div');meta.className='hist-detail-meta';
+  meta.innerHTML=`<b>${entry.tableName}</b><br>${t} \u00b7 Room <b>${entry.roomCode}</b><br>Bet \u20ac${entry.totalBet} &nbsp; Net: <b class="${nc}">${entry.netCash>=0?'+':''}\u20ac${Math.abs(entry.netCash).toFixed(2)}</b>`;
+  body.appendChild(meta);
+  // Table seat map
+  if(entry.seatMap){
+    const mapDiv=document.createElement('div');mapDiv.className='hd-table-map';
+    mapDiv.innerHTML='<div class="hd-table-map-title">Seats</div>';
+    const row=document.createElement('div');row.className='hd-table-row';
+    entry.seatMap.forEach(s=>{
+      const dot=document.createElement('div');
+      dot.className='hd-seat-dot'+(s.mine?' mine':s.taken?' taken':'');
+      dot.textContent=s.n;
+      row.appendChild(dot);
+    });
+    mapDiv.appendChild(row);
+    body.appendChild(mapDiv);
+  }
+  // Dealer hand
+  const ds=document.createElement('div');ds.className='hd-dealer-row';
+  const dScore=score(entry.dealerCards||[]);
+  ds.innerHTML=`<span class="hd-section-label">Dealer \u00b7 ${dScore>21?'Bust':dScore}</span>`;
+  const dealerRow=document.createElement('div');dealerRow.className='hd-cards-row';
+  (entry.dealerCards||[]).forEach(c=>dealerRow.appendChild(mkHistCard(c)));
+  ds.appendChild(dealerRow);body.appendChild(ds);
+  // Seats
+  const seatsDiv=document.createElement('div');seatsDiv.className='hd-seats';
+  entry.seats.forEach(s=>{
+    const sd=document.createElement('div');sd.className='hd-seat';
+    sd.innerHTML=`<div class="hd-seat-label">Seat ${s.sid}</div>`;
+    s.hands.forEach((h,hi)=>{
+      const hd=document.createElement('div');hd.className='hd-hand';
+      if(s.hands.length>1)hd.innerHTML=`<div class="hd-section-label">Hand ${hi+1}</div>`;
+      const cr=document.createElement('div');cr.className='hd-cards-row';
+      h.cards.forEach((c,ci)=>{
+        const img=mkHistCard(c);
+        const dec=h.decisions?.[ci];
+        if(dec){
+          const chip=document.createElement('span');
+          chip.className='hd-move-chip '+(dec==='hit'?'hit-chip':dec==='stand'?'stand-chip':dec==='double'?'double-chip':'bust-chip');
+          chip.textContent=dec==='hit'?'+':dec==='stand'?'−':dec==='double'?'2×':'✕';
+          const wrap=document.createElement('div');wrap.style.cssText='display:flex;flex-direction:column;align-items:center;gap:1px;';
+          wrap.appendChild(img);wrap.appendChild(chip);cr.appendChild(wrap);
+        } else {
+          cr.appendChild(img);
+        }
+      });
+      const rc=h.result?.toLowerCase().includes('win')?'res-win':h.result?.toLowerCase().includes('push')?'res-push':'res-lose';
+      hd.appendChild(cr);
+      hd.innerHTML+=`<div class="hd-result ${rc}">${h.result||'\u2014'} \u00b7 ${h.score}</div>`;
+      sd.appendChild(hd);
+    });
+    // Bets table
+    const bd=document.createElement('div');bd.className='hd-bets-table';
+    const fmtNet=(n)=>`<span class="${n>=0?'hist-pos':'hist-neg'}">${n>=0?'+':''}\u20ac${Math.abs(n)}</span>`;
+    const pp=s.ppBet>0?`<div class="hd-bet-line"><span>PP</span><span>\u20ac${s.ppBet}</span>${fmtNet(s.ppNet)}</div>`:'';
+    const sp2=s.spBet>0?`<div class="hd-bet-line"><span>21+3</span><span>\u20ac${s.spBet}</span>${fmtNet(s.spNet)}</div>`:'';
+    bd.innerHTML=`<div class="hd-bet-line hd-bet-header"><span>Bet</span><span>Amount</span><span>Net</span></div><div class="hd-bet-line"><span>Main</span><span>\u20ac${s.mainBet}</span>${fmtNet(s.mainNet)}</div>${pp}${sp2}`;
+    sd.appendChild(bd);seatsDiv.appendChild(sd);
+  });
+  body.appendChild(seatsDiv);
+  $('hd-back').addEventListener('click',()=>renderHistoryList(body));
+}
