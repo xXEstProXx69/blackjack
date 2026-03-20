@@ -7,9 +7,17 @@ let activeTurnSid=null,activeTurnHandIdx=0,prevGs=null,winOverlayShown=false;
 let actionPending=false,sfxVolume=0.4,currentRoundLog=null;
 let countdownRafId=null,countdownStart=0,countdownTotal=15000;
 let autoplayOn=false,autoplayThreshold=17,bjSoundedSeats=new Set(),shownSideBetPills=new Set();
+let _pendingCountdownSid=null,_countdownGen=0;
 const _prevScores={};
 const _scoreOverride={}; // pillId → {text, locked} — persists until real value arrives
 const CHIP_COLORS={1:'#e8e8e8,#b0b0b0',2:'#d0d0d0,#888',5:'#e03030,#900',10:'#1a7ad4,#0a4a9a',25:'#2da84e,#155a28',50:'#c07020,#804010',100:'#222,#111',200:'#b050f0,#6000b0',500:'#8030a0,#400060',1000:'#e0b000,#a07000',2000:'#e07030,#c03000',5000:'#10b0b0,#006060',10000:'#f050a0,#900040'};
+function bestChip(preferred){
+  // If wallet can cover preferred, use it; otherwise find largest chip <= wallet
+  const DENOMS=[10000,5000,2000,1000,500,200,100,50,25,10,5,2,1];
+  if(myWallet>=preferred)return preferred;
+  for(const d of DENOMS){if(myWallet>=d)return d;}
+  return 0; // broke
+}
 const AudioCtx=window.AudioContext||window.webkitAudioContext;let actx=null;
 function getACtx(){if(!actx)actx=new AudioCtx();return actx;}
 function playTone(f,d,t='sine',v=sfxVolume){if(!v)return;try{const ctx=getACtx(),o=ctx.createOscillator(),g=ctx.createGain();o.connect(g);g.connect(ctx.destination);o.type=t;o.frequency.value=f;g.gain.setValueAtTime(v*0.3,ctx.currentTime);g.gain.exponentialRampToValueAtTime(0.0001,ctx.currentTime+d);o.start();o.stop(ctx.currentTime+d);}catch(e){}}
@@ -74,10 +82,13 @@ socket.on('timerCancel',()=>hide('bet-timer-wrap'));
 socket.on('yourTurn',({sid,handIdx,ownerId})=>{
   activeTurnSid=sid;activeTurnHandIdx=handIdx||0;actionPending=false;stopCountdown();
   if(ownerId===mySocketId){
-    // Small delay to let any in-progress card animation finish before showing buttons
+    _pendingCountdownSid=sid;
+    const myGen=++_countdownGen;
     setTimeout(()=>{
+      if(_countdownGen!==myGen)return;
       showPlayButtons(sid,handIdx||0);
       setTimeout(()=>{
+        if(_countdownGen!==myGen)return;
         const pb=$('play-buttons');
         if(pb&&!pb.classList.contains('betting-hidden')&&!pb.classList.contains('hidden'))
           startCountdown(15000,()=>autoPlayAction(sid,handIdx||0));
@@ -88,7 +99,7 @@ socket.on('yourTurn',({sid,handIdx,ownerId})=>{
   }
 });
 socket.on('dealVote',({ready,needed,readyIds})=>{const b=$('btn-deal');if(!b)return;if(readyIds.includes(mySocketId)){b.textContent=`Waiting\u2026 (${ready}/${needed})`;b.disabled=true;b.style.opacity='0.6';}else{b.textContent=`Deal (${ready}/${needed} ready)`;b.disabled=false;b.style.opacity='1';}});
-socket.on('stateUpdate',({gs})=>{if(gs.gameStatus==='betting'){winOverlayShown=false;activeTurnSid=null;actionPending=false;bjSoundedSeats.clear();shownSideBetPills.clear();stopCountdown();hide('play-buttons');const db=$('btn-deal');if(db){db.disabled=false;db.style.opacity='1';db.textContent='DEAL';}document.querySelectorAll('.card,.card-back').forEach(c=>c.classList.add('fly-out'));stopDealCountdown();document.querySelectorAll('.circle-win-label,.win-chip-stack,.chip-stack,.sidebet-win-pill').forEach(e=>e.remove());Object.keys(_prevScores).forEach(k=>delete _prevScores[k]);Object.keys(_scoreOverride).forEach(k=>delete _scoreOverride[k]);}});
+
 
 // ── Smooth countdown rectangle ─────────────────────────────────
 function startCountdown(durationMs,onTimeout){
@@ -246,6 +257,9 @@ function buildAndSaveHistory(gs,players){
   if(!mySeats.length)return;
   const ordered=[...mySeats].sort((a,b)=>Number(b)-Number(a));
   let totalBet=0,netCash=0;
+  // Build seat map: all 5 slots, which are mine
+  const allSeats=['1','2','3','4','5'];
+  const seatMap=allSeats.map(n=>({n,mine:mySeats.includes(n),taken:!!(gs.seatOwners?.[n])}));
   const seats=ordered.map(sid=>{
     const main=gs.bets?.[sid]?.main||0,pp=gs.bets?.[sid]?.pp||0,sp=gs.bets?.[sid]?.sp||0;
     totalBet+=main+pp+sp;
@@ -255,16 +269,53 @@ function buildAndSaveHistory(gs,players){
     const mainNet=mr-main;
     const ppWin=gs.sideBetWins?.[sid]?.pp?.payout||0,spWin=gs.sideBetWins?.[sid]?.sp?.payout||0;
     netCash+=mainNet+(ppWin-pp)+(spWin-sp);
+    const isDoubledSeat=gs.doubled?.[sid]||false;
+    const mkHandEntry=(cards,resultBadge,hk)=>{
+      const isBust=resultBadge?.toLowerCase().includes('bust');
+      // Determine if this hand was doubled
+      const handDoubled=hk?gs.doubledHands?.[sid]?.[hk]:isDoubledSeat;
+      // Per-card decisions: first 2 = null (dealt), rest = hit or double
+      const decisions=cards.map((c,i)=>{
+        if(i<2)return null;
+        // If exactly 3 cards and hand was doubled, that 3rd card is the double card
+        if(handDoubled&&cards.length===3&&i===2)return'double';
+        return'hit';
+      });
+      return{cards,decisions,stood:!isBust,result:resultBadge||'',score:score(cards)};
+    };
     let hands=[];
-    if(gs.splitActive?.[sid]){['hand1','hand2'].forEach((hk,i)=>{const cards=gs.hands?.[sid]?.[hk]||[];hands.push({cards,result:badges[i]?.text||'',score:score(cards)});});}
-    else{const cards=Array.isArray(gs.hands?.[sid])?gs.hands[sid]:[];hands.push({cards,result:badges[0]?.text||'',score:score(cards)});}
+    if(gs.splitActive?.[sid]){
+      ['hand1','hand2'].forEach((hk,i)=>{
+        const cards=gs.hands?.[sid]?.[hk]||[];
+        hands.push(mkHandEntry(cards,badges[i]?.text,hk));
+      });
+    } else {
+      const cards=Array.isArray(gs.hands?.[sid])?gs.hands[sid]:[];
+      hands.push(mkHandEntry(cards,badges[0]?.text));
+    }
     return{sid,mainBet:main,ppBet:pp,spBet:sp,mainNet,ppNet:ppWin-pp,spNet:spWin-sp,ppWin,spWin,hands};
   });
-  pushRound({id:Date.now(),time:new Date().toISOString(),roomCode,tableName:'Kikikov BlackJack',totalBet,netCash,seats,dealerCards:gs.hands?.dealer||[]});
+  pushRound({id:Date.now(),time:new Date().toISOString(),roomCode,tableName:'Kikikov BlackJack',totalBet,netCash,seats,seatMap,dealerCards:gs.hands?.dealer||[]});
 }
 
 // ── Render State ───────────────────────────────────────────────
 function renderState(gs,players,hostId){
+  // Betting phase reset — runs BEFORE chip rendering so re-render adds chips back correctly
+  if(gs.gameStatus==='betting'){
+    winOverlayShown=false;activeTurnSid=null;actionPending=false;
+    bjSoundedSeats.clear();shownSideBetPills.clear();stopCountdown();
+    hide('play-buttons');
+    const db=$('btn-deal');if(db){db.disabled=false;db.style.opacity='1';db.textContent='DEAL';}
+    document.querySelectorAll('.card,.card-back').forEach(c=>c.classList.add('fly-out'));
+    stopDealCountdown();
+    document.querySelectorAll('.circle-win-label,.win-chip-stack,.sidebet-win-pill,.seat-result-icon').forEach(e=>e.remove());
+    document.querySelectorAll('.chip-stack').forEach(e=>e.remove());
+    Object.keys(_prevScores).forEach(k=>delete _prevScores[k]);
+    Object.keys(_scoreOverride).forEach(k=>delete _scoreOverride[k]);
+    _pendingCountdownSid=null;
+    // Cancel any stale score animation tokens on all pills
+    document.querySelectorAll('.score-display,.split-score').forEach(p=>{p._animTok=(p._animTok||0)+1;});
+  }
   const pList=$('players-list');
   if(pList)pList.innerHTML=Object.entries(players).map(([id,p])=>`<div class="player-entry ${id===mySocketId?'me':''}"><span class="pe-name">${id===hostId?'\ud83d\udc51 ':''}${p.name}</span><span class="pe-wallet">\u20ac${p.wallet.toLocaleString()}</span></div>`).join('');
   const me=players[mySocketId];
@@ -314,19 +365,67 @@ function renderSeat(sid,gs,players){
     if(ownerName){
       const isInsured=Array.isArray(gs.insuredSeats)&&gs.insuredSeats.includes(sid);
       nt.textContent=(isInsured?'🛡 ':'')+ownerName;
-      nt.classList.remove('hidden');
-      nt.style.background=isMine?'rgba(255,215,0,0.18)':'rgba(255,255,255,0.1)';
-      nt.style.color=isMine?'#ffd700':'#fff';
+      // Show name only in betting phase; hide once cards are dealt
+      const showName=isBetting;
+      nt.classList.toggle('hidden',!showName);
+      // No yellow bg/border — plain subtle style
+      nt.style.background='rgba(0,0,0,0)';
+      nt.style.border='none';
+      nt.style.color='rgba(255,255,255,0.75)';
     }else nt.classList.add('hidden');
   }
   for(const t of ['main','pp','sp'])renderCircle(sid,t,gs,isMine&&isBetting);
   renderHand(sid,gs);renderScore(sid,gs);renderBadges(sid,gs);renderBust(sid,gs);
+  renderSeatIndicator(sid,gs,players);
   // Only show active-turn outline during play phase, not betting
   seatEl.classList.toggle('active-turn', activeTurnSid===sid && !isBetting);
   if(isBetting){
     seatEl.querySelectorAll('.circle-win-label,.win-chip-stack').forEach(e=>e.remove());
     seatEl.classList.remove('insurance-highlight');
   }
+}
+function renderSeatIndicator(sid,gs,players){
+  const seatEl=$('seat-'+sid);if(!seatEl)return;
+  const ownerId=gs.seatOwners?.[sid];
+  const isBetting=['betting','idle'].includes(gs.gameStatus);
+  const el=$('score-'+sid);if(!el)return;
+  // Remove any existing result overlay
+  seatEl.querySelector('.seat-result-icon')?.remove();
+  if(isBetting){
+    // Betting: hide score pill, name is already shown by renderSeat
+    el.classList.add('hidden');
+    return;
+  }
+  // During play/dealing: score pill is shown by renderScore — leave it alone
+  if(gs.gameStatus!=='game_over')return;
+  // game_over: replace score pill content with result icon
+  if(!ownerId)return;
+  const badges=gs.badges?.[sid]||[];
+  const hasBJ=badges.some(b=>b.cls==='bj');
+  const hasWin=badges.some(b=>b.cls==='win')||hasBJ;
+  const hasPush=badges.some(b=>b.cls==='push');
+  const hasLose=badges.some(b=>b.cls==='lose');
+  if(!badges.length)return;
+  // Build result icon div (shown at same position as score pill)
+  const icon=document.createElement('div');
+  icon.className='seat-result-icon';
+  if(hasWin){
+    icon.classList.add('sri-win');
+    // Golden medal SVG
+    icon.innerHTML='<svg viewBox="0 0 24 24" fill="none" width="22" height="22"><circle cx="12" cy="14" r="8" stroke="#ffd700" stroke-width="2" fill="rgba(255,215,0,0.15)"/><path d="M9 10l-2-6h10l-2 6" stroke="#ffd700" stroke-width="1.5" stroke-linejoin="round" fill="none"/><text x="12" y="18" text-anchor="middle" font-size="7" font-weight="900" fill="#ffd700" font-family="Rajdhani,sans-serif">1</text></svg>';
+  } else if(hasPush){
+    icon.classList.add('sri-push');
+    // Two arrows: up-left, down-right
+    icon.innerHTML='<svg viewBox="0 0 24 24" fill="none" width="22" height="22"><path d="M7 14V8M7 8L5 10M7 8L9 10" stroke="#ffd700" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M17 10v6M17 16L15 14M17 16L19 14" stroke="#ffd700" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+  } else if(hasLose){
+    icon.classList.add('sri-lose');
+    // Gray X
+    icon.innerHTML='<svg viewBox="0 0 24 24" fill="none" width="20" height="20"><line x1="7" y1="7" x2="17" y2="17" stroke="#666" stroke-width="2.5" stroke-linecap="round"/><line x1="17" y1="7" x2="7" y2="17" stroke="#666" stroke-width="2.5" stroke-linecap="round"/></svg>';
+  } else {return;}
+  // Place it at the score pill position
+  icon.style.cssText=`position:absolute;top:${el.style.top||'-22px'};right:${el.style.right||'-6px'};z-index:6;`;
+  el.classList.add('hidden');
+  seatEl.appendChild(icon);
 }
 function renderCircle(sid,type,gs,canBet){
   const circle=document.querySelector(`.bet-circle[data-seat="${sid}"][data-type="${type}"]`);if(!circle)return;
@@ -340,7 +439,7 @@ function renderCircle(sid,type,gs,canBet){
     if(noMain){circle.onclick=null;return;}
     else circle.classList.remove('sidebet-locked');
   }
-  if(ba){if(type==='main'){const oid=gs.seatOwners?.[sid];if(!oid)circle.onclick=()=>{sfxClick();socket.emit('claimSeat',{sid});};else if(oid===mySocketId)circle.onclick=()=>{sfxChip();socket.emit('placeBet',{sid,type:'main',amt:selectedChip});};}else if(gs.seatOwners?.[sid]===mySocketId){circle.onclick=()=>{sfxChip();socket.emit('placeBet',{sid,type,amt:selectedChip});};}else if(!gs.seatOwners?.[sid]){circle.onclick=()=>{sfxClick();socket.emit('claimSeat',{sid});};}}
+  if(ba){if(type==='main'){const oid=gs.seatOwners?.[sid];if(!oid)circle.onclick=()=>{sfxClick();socket.emit('claimSeat',{sid});};else if(oid===mySocketId)circle.onclick=()=>{sfxChip();const amt=bestChip(selectedChip);if(amt>0)socket.emit('placeBet',{sid,type:'main',amt});};}else if(gs.seatOwners?.[sid]===mySocketId){circle.onclick=()=>{sfxChip();const amt=bestChip(selectedChip);if(amt>0)socket.emit('placeBet',{sid,type,amt});};}else if(!gs.seatOwners?.[sid]){circle.onclick=()=>{sfxClick();socket.emit('claimSeat',{sid});};}}
   // Don't clear the win pill if it's already showing (let its own timeout handle removal)
   circle.querySelectorAll('.chip-stack').forEach(e=>e.remove());
   if(!circle.querySelector('.sidebet-win-pill'))circle.querySelectorAll('.sidebet-win-pill').forEach(e=>e.remove());
@@ -348,15 +447,18 @@ function renderCircle(sid,type,gs,canBet){
   if(wd&&type!=='main'){renderSideBetWinPill(circle,wd,`${sid}_${type}`,gs.gameStatus);return;}
   const isPlaying=['playing','dealer_turn','game_over'].includes(gs.gameStatus);
   if(amt>0){
-    renderChipStack(circle,amt,type==='main');
-    // If this is a sidebet and we're past dealing, dim it if it lost (no win entry)
-    if(type!=='main'&&isPlaying){
-      const wk2=type==='pp'?'pp':'sp';
-      const won=!!(gs.sideBetWins?.[sid]?.[wk2]);
-      circle.style.opacity=won?'1':'0.25';
-    } else {
-      circle.style.opacity='';
+    // During split, main-bet chip is shown in split-chips-row instead
+    if(type==='main'&&gs.splitActive?.[sid]){circle.style.opacity='0';circle.classList.remove('has-bet');}
+    else{
+      renderChipStack(circle,amt,type==='main');
+      if(type!=='main'&&isPlaying){
+        const wk2=type==='pp'?'pp':'sp';
+        const won=!!(gs.sideBetWins?.[sid]?.[wk2]);
+        circle.style.opacity=won?'1':'0.25';
+      } else {circle.style.opacity='';}
     }
+  } else {
+    circle.style.opacity='';
   }
   circle.classList.toggle('has-bet',amt>0);
 }
@@ -381,11 +483,36 @@ function renderChipStack(circle,amt,isMain,isGold=false){
   const topBottom=4+(chips.length-1)*offsetY;const lbl=document.createElement('div');lbl.className='chip-stack-amt';if(isGold)lbl.style.color='#ffd700';lbl.style.bottom=(topBottom+chipW/2-9)+'px';lbl.style.top='auto';lbl.textContent=fmt(amt);stack.appendChild(lbl);circle.appendChild(stack);
 }
 function ensureSplitBetCircle(seatEl,sid,gs){
-  let sc=seatEl.querySelector('.split-bet-circle');
-  if(!gs.splitActive?.[sid]){if(sc)sc.remove();return;}
-  if(!sc){sc=document.createElement('div');sc.className='split-bet-circle';seatEl.querySelector('.betting-circles')?.appendChild(sc);}
-  sc.querySelectorAll('.chip-stack').forEach(e=>e.remove());
-  const sb=gs.splitBets?.[sid]||gs.bets?.[sid]?.main||0;if(sb>0)renderChipStack(sc,sb,true);
+  // Remove old single split-bet-circle (replaced by split-chips-row)
+  seatEl.querySelector('.split-bet-circle')?.remove();
+  // Also hide the main-bet circle chips during split (shown in split-chips-row instead)
+  const splitHandWrap=seatEl.querySelector('.split-hands');
+  let row=seatEl.querySelector('.split-chips-row');
+  if(!gs.splitActive?.[sid]){
+    row?.remove();
+    // Restore main-bet circle opacity
+    seatEl.querySelector('.bet-circle.main-bet')?.style.setProperty('opacity','');
+    return;
+  }
+  if(!splitHandWrap)return;
+  if(!row){
+    row=document.createElement('div');row.className='split-chips-row';
+    // Insert after split-hands but before betting-circles
+    splitHandWrap.after(row);
+  }
+  row.innerHTML='';
+  // Left slot = hand2 bet (splitBets), Right slot = hand1 bet (bets.main)
+  const h2Amt=gs.splitBets?.[sid]||0;
+  const h1Amt=gs.bets?.[sid]?.main||0;
+  const mkSlot=(amt,label)=>{
+    const slot=document.createElement('div');slot.className='split-chip-slot';
+    const lbl=document.createElement('div');lbl.className='split-chip-label';lbl.textContent=label;
+    slot.appendChild(lbl);
+    if(amt>0){const circ=document.createElement('div');circ.className='split-bet-circle';renderChipStack(circ,amt,true);slot.appendChild(circ);}
+    return slot;
+  };
+  row.appendChild(mkSlot(h2Amt,'H2'));
+  row.appendChild(mkSlot(h1Amt,'H1'));
 }
 function renderHand(sid,gs){
   const el=$('hand-'+sid);if(!el)return;
@@ -423,23 +550,22 @@ function animateScoreUpdate(pill,newVal){
   if(pill.classList.contains('busted'))return;
   const id=pill.id;
   const ovr=_scoreOverride[id];
+  const strVal=String(newVal);
   if(ovr){
-    // An action override is set ('+', '−', '2×')
-    // If the value actually changed (card arrived), clear override and show new value
-    if(_prevScores[id]!==undefined&&newVal!==_prevScores[id]){
+    _prevScores[id]=newVal; // always track latest
+    // For hit/double: once value changes (card arrived), clear override and show new value
+    if(ovr.text!=='−'&&ovr.baseVal!==undefined&&strVal!==String(ovr.baseVal)){
       delete _scoreOverride[id];
-      _prevScores[id]=newVal;
-      bn.style.transition='opacity 0.2s';bn.style.opacity='0';
-      setTimeout(()=>{bn.textContent=newVal;bn.style.opacity='1';},200);
+      pill._animTok=(pill._animTok||0)+1;
+      const freshBn2=pill.querySelector('.bust-num');
+      if(freshBn2){freshBn2.style.transition='none';freshBn2.style.opacity='1';freshBn2.textContent=strVal;}
     }
-    // else value unchanged (stateUpdate before card arrived) — keep showing override
     return;
   }
-  if(_prevScores[id]===newVal){if(bn.textContent!==newVal){bn.textContent=newVal;}return;}
-  // Normal update — fade in new value
-  bn.style.transition='opacity 0.2s';bn.style.opacity='0';
-  setTimeout(()=>{bn.textContent=newVal;bn.style.opacity='1';},200);
   _prevScores[id]=newVal;
+  // Just set the value directly — no hiding, no opacity tricks during gameplay
+  bn.style.transition='none';bn.style.opacity='1';
+  bn.textContent=strVal;
 }
 function renderScore(sid,gs){
   const el=$('score-'+sid);if(!el)return;
@@ -448,13 +574,20 @@ function renderScore(sid,gs){
   if(!hand.length){el.classList.add('hidden');return;}
   const stood=gs.stoodSeats?.includes(sid);
   if(score(hand)===21&&hand.length===2){
-    if(_prevScores[el.id]!=='BJ'){el.className='score-display bj-score';el.innerHTML='<span class="bust-num bj-text">BJ</span><span class="bust-icon">\ud83d\udca5</span>';el.classList.remove('hidden','busted','show-icon');_prevScores[el.id]='BJ';}return;
+    if(_prevScores[el.id]!=='BJ'){
+      el.className='score-display bj-score';
+      if(!el.querySelector('.bust-num')){el.innerHTML='<span class="bust-num"></span><span class="bust-icon">\ud83d\udca5</span>';}
+      const bnBJ=el.querySelector('.bust-num');if(bnBJ){bnBJ.className='bust-num bj-text';bnBJ.style.transition='none';bnBJ.style.opacity='1';bnBJ.textContent='BJ';}
+      el.classList.remove('hidden','busted','show-icon');_prevScores[el.id]='BJ';
+    }return;
   }
   // If already showing bust icon, freeze and do not update
   if(el.classList.contains('busted')&&el.classList.contains('show-icon'))return;
   el.className='score-display';const newVal=scoreLabel(hand,stood);
-  // Always rebuild innerHTML to clear any lingering bj-text gold color
-  el.innerHTML='<span class="bust-num"></span><span class="bust-icon">\ud83d\udca5</span>';
+  // Ensure inner structure exists (created once, never rebuilt)
+  if(!el.querySelector('.bust-num')){el.innerHTML='<span class="bust-num"></span><span class="bust-icon">\ud83d\udca5</span>';}
+  // Clear any bj-text styling without rebuilding
+  const bjSpan=el.querySelector('.bj-text');if(bjSpan){bjSpan.className='bust-num';bjSpan.style.color='';}
   el.classList.remove('hidden');animateScoreUpdate(el,newVal);
   if(score(hand)>21){el.classList.add('busted');setTimeout(()=>el.classList.add('show-icon'),800);}else el.classList.remove('busted','show-icon');
 }
@@ -516,7 +649,20 @@ function mkCard(c,animate){
 }
 function renderDealer(gs){
   const el=$('dealer-hand');if(!el)return;const hand=gs.hands?.dealer||[];const wasHidden=el.querySelector('.card-back');
-  if(gs.dealerRevealed&&wasHidden){el.innerHTML='';hand.forEach(c=>el.appendChild(mkCard(c,false)));}
+  if(gs.dealerRevealed&&wasHidden){
+    // Flip the hidden card with animation, then show face
+    const holeSlot=wasHidden; // it's the card-back element
+    holeSlot.classList.add('card-flip-anim');
+    setTimeout(()=>{
+      el.innerHTML='';
+      hand.forEach((c,i)=>{
+        const card=mkCard(c,false);
+        // The hole card (index 1) gets a subtle entrance
+        if(i===1)card.classList.add('card-deal-anim');
+        el.appendChild(card);
+      });
+    },300); // flip mid-point at 300ms
+  }
   else if(!gs.dealerRevealed){const ex=el.querySelectorAll('.card,.card-back').length;if(hand.length<ex){el.innerHTML='';}else{hand.slice(ex).forEach((c,i)=>{if(ex+i===1){const b=document.createElement('div');b.className='card-back card-deal-anim';el.appendChild(b);}else el.appendChild(mkCard(c,true));});}}
   else{const ex=el.querySelectorAll('.card,.card-back').length;hand.slice(ex).forEach(c=>el.appendChild(mkCard(c,true)));}
   const sc=$('dealer-score');if(sc&&hand.length>0){const dh=gs.dealerRevealed?hand:[hand[0]],ds=score(dh);sc.innerHTML=`<span class="bust-num">${ds}</span><span class="bust-icon">\ud83d\udca5</span>`;sc.classList.remove('hidden');if(gs.dealerRevealed&&ds>21){sc.classList.add('busted');setTimeout(()=>sc.classList.add('show-icon'),800);}else sc.classList.remove('busted','show-icon');}else if(sc)sc.classList.add('hidden');
@@ -550,11 +696,16 @@ function showPlayButtons(sid,handIdx){
   const pb=$('play-buttons');
   if(pb&&canDouble&&!canSplit){const sp=document.createElement('div');sp.id='pb-spacer-right';sp.style.cssText='width:86px;height:86px;order:4;flex-shrink:0;';pb.appendChild(sp);}
   if(pb&&canSplit&&!canDouble){const sp=document.createElement('div');sp.id='pb-spacer-left';sp.style.cssText='width:86px;height:86px;order:1;flex-shrink:0;';pb.prepend(sp);}
+  ['btn-hit','btn-stand','btn-double','btn-split'].forEach(id=>{const b=$(id);if(b)b.disabled=false;});
   const pbEl=$('play-buttons');if(pbEl){pbEl.classList.remove('betting-hidden');pbEl.classList.remove('hidden');}actionPending=false;setTimeout(positionCountdownBorder,50);
 }
 function doAction(action){
   if(!activeTurnSid||actionPending)return;
-  actionPending=true;stopCountdown();
+  actionPending=true;
+  _countdownGen++;_pendingCountdownSid=null;
+  stopCountdown();
+  // Immediately disable all action buttons to prevent spam
+  ['btn-hit','btn-stand','btn-double','btn-split'].forEach(id=>{const b=$(id);if(b)b.disabled=true;});
   const pb=$('play-buttons');
   sfxClick();
   // Set score pill override immediately on action
@@ -564,23 +715,29 @@ function doAction(action){
     const pillId=gs?.splitActive?.[sid]?`score-${sid}-hand${handIdx+1}`:`score-${sid}`;
     const pill=$(pillId);
     if(pill&&!pill.classList.contains('busted')){
-      const bn=pill.querySelector('.bust-num');
+      // Always re-query bn fresh — never hold stale reference
+      const getBn=()=>pill.querySelector('.bust-num');
+      const bn=getBn();
       if(bn){
         const overrideText=action==='hit'?'+':action==='stand'?'−':action==='double'?'2×':null;
         if(overrideText){
-          _scoreOverride[pillId]={text:overrideText};
-          bn.style.transition='opacity 0.15s';bn.style.opacity='0';
-          setTimeout(()=>{bn.textContent=overrideText;bn.style.opacity='0.75';},150);
+          const baseVal=_prevScores[pillId];
+          const restoreVal=baseVal!==undefined?String(baseVal):(bn.textContent||'');
+          _scoreOverride[pillId]={text:overrideText,baseVal,restoreVal};
+          pill._animTok=(pill._animTok||0)+1;
+          const myTok=pill._animTok;
+          // Show symbol immediately, always re-query to get live node
+          const liveBn=getBn();
+          if(liveBn){liveBn.style.transition='none';liveBn.style.opacity='1';liveBn.textContent=overrideText;}
           if(action==='stand'){
-            // For stand: show '−' briefly then fade back to number
+            // After 650ms restore the score — re-query bn fresh to avoid stale refs
             setTimeout(()=>{
-              bn.style.opacity='0';
-              setTimeout(()=>{
-                delete _scoreOverride[pillId];
-                bn.textContent=bn.textContent===overrideText?(_prevScores[pillId]||''):bn.textContent;
-                bn.style.opacity='1';
-              },300);
-            },800);
+              if(pill._animTok!==myTok)return;
+              delete _scoreOverride[pillId];
+              const rv=_prevScores[pillId]!==undefined?String(_prevScores[pillId]):restoreVal;
+              const freshBn=pill.querySelector('.bust-num');
+              if(freshBn){freshBn.style.transition='none';freshBn.style.opacity='1';freshBn.textContent=rv;}
+            },650);
           }
         }
       }
@@ -614,7 +771,10 @@ function showInsuranceForSeat(sid,cost){
   document.querySelectorAll('.seat.insurance-highlight').forEach(e=>e.classList.remove('insurance-highlight'));
   const seatEl=$('seat-'+sid);if(seatEl)seatEl.classList.add('insurance-highlight');
   const modal=$('insurance-modal');
-  modal.innerHTML=`<div id="insurance-title">\ud83c\udccf Seat ${sid} \u2014 Insurance?</div><div id="insurance-subtitle">Costs \u20ac${cost} \u00b7 Pays 2:1</div><div class="ins-shield-row"><button class="ins-shield ins-shield-yes" id="ins-yes-btn"><svg viewBox="0 0 60 70" fill="none" width="70" height="82"><path d="M30 4 L56 14 L56 36 C56 52 30 66 30 66 C30 66 4 52 4 36 L4 14 Z" fill="rgba(46,125,50,0.85)" stroke="#4caf50" stroke-width="2"/><polyline points="18,35 27,45 44,26" stroke="white" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg><span>YES</span></button><button class="ins-shield ins-shield-no" id="ins-no-btn"><svg viewBox="0 0 60 70" fill="none" width="70" height="82"><path d="M30 4 L56 14 L56 36 C56 52 30 66 30 66 C30 66 4 52 4 36 L4 14 Z" fill="rgba(198,40,40,0.85)" stroke="#ef5350" stroke-width="2"/><line x1="19" y1="25" x2="41" y2="47" stroke="white" stroke-width="4" stroke-linecap="round"/><line x1="41" y1="25" x2="19" y2="47" stroke="white" stroke-width="4" stroke-linecap="round"/></svg><span>NO</span></button></div>`;
+  const canAfford=myWallet>=cost;
+  const yesStyle=canAfford?'':'opacity:0.35;pointer-events:none;';
+  const cantAffordNote=canAfford?'':`<div id="ins-cant-afford">Not enough balance (\u20ac${cost} needed)</div>`;
+  modal.innerHTML=`<div id="insurance-title">\ud83c\udccf Seat ${sid} \u2014 Insurance?</div><div id="insurance-subtitle">Costs \u20ac${cost} \u00b7 Pays 2:1</div>${cantAffordNote}<div class="ins-shield-row"><button class="ins-shield ins-shield-yes" id="ins-yes-btn" style="${yesStyle}"><svg viewBox="0 0 60 70" fill="none" width="70" height="82"><path d="M30 4 L56 14 L56 36 C56 52 30 66 30 66 C30 66 4 52 4 36 L4 14 Z" fill="rgba(46,125,50,0.85)" stroke="#4caf50" stroke-width="2"/><polyline points="18,35 27,45 44,26" stroke="white" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg><span>YES</span></button><button class="ins-shield ins-shield-no" id="ins-no-btn"><svg viewBox="0 0 60 70" fill="none" width="70" height="82"><path d="M30 4 L56 14 L56 36 C56 52 30 66 30 66 C30 66 4 52 4 36 L4 14 Z" fill="rgba(198,40,40,0.85)" stroke="#ef5350" stroke-width="2"/><line x1="19" y1="25" x2="41" y2="47" stroke="white" stroke-width="4" stroke-linecap="round"/><line x1="41" y1="25" x2="19" y2="47" stroke="white" stroke-width="4" stroke-linecap="round"/></svg><span>NO</span></button></div>`;
   function respond(insure){document.querySelectorAll('.seat.insurance-highlight').forEach(e=>e.classList.remove('insurance-highlight'));hide('insurance-modal');stopCountdown();document.getElementById('ins-countdown-svg')?.remove();socket.emit('insuranceResponse',{sid,insure});}
   $('ins-yes-btn').addEventListener('click',()=>respond(true),{once:true});
   $('ins-no-btn').addEventListener('click',()=>respond(false),{once:true});
@@ -628,7 +788,7 @@ function showInsuranceForSeat(sid,cost){
     const pad=14, x=rect.left-pad, y=rect.top-pad;
     const w=rect.width+pad*2, h=rect.height+pad*2, rx=26;
     const mx=w/2;
-    const pathD=`M ${mx} 0 L ${w-rx} 0 Q ${w} 0 ${w} ${rx} L ${w} ${h-rx} Q ${w} ${h} ${w-rx} ${h} L ${rx} ${h} Q 0 ${h} 0 ${h-rx} L 0 ${rx} Q 0 0 ${rx} 0 Z`;
+    const pathD=`M ${mx} 0 L ${rx} 0 Q 0 0 0 ${rx} L 0 ${h-rx} Q 0 ${h} ${rx} ${h} L ${w-rx} ${h} Q ${w} ${h} ${w} ${h-rx} L ${w} ${rx} Q ${w} 0 ${w-rx} 0 L ${mx} 0`;
     const perim=2*(w-2*rx)+2*(h-2*rx)+2*Math.PI*rx;
     const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');
     svg.id='ins-countdown-svg';
@@ -669,4 +829,79 @@ function openHistoryPanel(){let panel=$('history-panel');if(!panel){panel=docume
 function renderHistoryList(container){const history=loadHistory();if(!history.length){container.innerHTML='<div class="history-empty">No rounds yet.</div>';return;}const byDay={};history.forEach(r=>{const d=r.time.slice(0,10);if(!byDay[d])byDay[d]=[];byDay[d].push(r);});const days=Object.keys(byDay).sort((a,b)=>b.localeCompare(a));container.innerHTML=days.map(day=>{const rounds=byDay[day],net=rounds.reduce((s,r)=>s+r.netCash,0);const dateStr=new Date(day+'T12:00:00').toLocaleDateString('en-GB',{weekday:'long',day:'numeric',month:'long',year:'numeric'});return`<div class="hist-day-row" data-day="${day}"><span class="hist-arrow">\u203a</span><span class="hist-date">${dateStr}</span><span class="hist-net ${net>=0?'hist-pos':'hist-neg'}">${net>=0?'+':''}\u20ac${Math.abs(net).toFixed(2)}</span></div><div class="hist-day-rounds hidden" id="hdr-${day.replace(/-/g,'_')}"></div>`;}).join('');container.querySelectorAll('.hist-day-row').forEach(row=>{row.addEventListener('click',()=>{const day=row.dataset.day,re=$(`hdr-${day.replace(/-/g,'_')}`);if(!re)return;re.classList.toggle('hidden');if(!re.classList.contains('hidden'))renderDayRounds(re,byDay[day]);});});}
 function renderDayRounds(container,rounds){container.innerHTML=rounds.map(r=>{const t=new Date(r.time).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});const nc=r.netCash>=0?'hist-pos':'hist-neg';return`<div class="hist-round-row" data-id="${r.id}"><div class="hist-round-top"><span class="hist-round-table">${r.tableName}</span><span class="hist-round-net ${nc}">${r.netCash>=0?'+':''}\u20ac${Math.abs(r.netCash).toFixed(2)}</span></div><div class="hist-round-sub">${t} \u00b7 Room ${r.roomCode} \u00b7 Bet \u20ac${r.totalBet}</div></div>`;}).join('');container.querySelectorAll('.hist-round-row').forEach(row=>{row.addEventListener('click',()=>{const id=parseInt(row.dataset.id),entry=loadHistory().find(r=>r.id===id);if(entry)openRoundDetail(entry);});});}
 function mkHistCard(c){const el=document.createElement('div');el.className='hd-card-img'+(suitIsRed(c.suit)?' red':'');el.innerHTML=`<span class="card-val">${c.value}</span><span class="card-suit">${{S:'\u2660',H:'\u2665',D:'\u2666',C:'\u2663'}[c.suit]||''}</span>`;return el;}
-function openRoundDetail(entry){const panel=$('history-panel');if(!panel)return;const body=$('history-body');if(!body)return;const t=new Date(entry.time).toLocaleString('en-GB',{weekday:'short',day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'});const nc=entry.netCash>=0?'hist-pos':'hist-neg';const dealerRow=document.createElement('div');dealerRow.className='hd-cards-row';(entry.dealerCards||[]).forEach(c=>dealerRow.appendChild(mkHistCard(c)));const seatsDiv=document.createElement('div');seatsDiv.className='hd-seats';entry.seats.forEach(s=>{const sd=document.createElement('div');sd.className='hd-seat';sd.innerHTML=`<div class="hd-seat-label">Seat ${s.sid}</div>`;s.hands.forEach((h,hi)=>{const hd=document.createElement('div');hd.className='hd-hand';hd.innerHTML=`<div class="hd-section-label">Hand ${hi+1}</div>`;const cr=document.createElement('div');cr.className='hd-cards-row';h.cards.forEach((c,ci)=>{const img=mkHistCard(c);if(ci===h.cards.length-1){const isBust=h.result?.toLowerCase().includes('bust');img.classList.add(isBust?'hd-decision-stand':'hd-decision-hit');const wrap=document.createElement('div');wrap.style.cssText='display:flex;flex-direction:column;align-items:center;gap:2px;';const ml=document.createElement('div');ml.className='hd-move-label '+(isBust?'hd-move-stand':'hd-move-hit');ml.textContent=h.result||'';wrap.appendChild(img);wrap.appendChild(ml);cr.appendChild(wrap);}else cr.appendChild(img);});const rc=h.result?.toLowerCase().includes('win')?'res-win':h.result?.toLowerCase().includes('push')?'res-push':'res-lose';hd.appendChild(cr);hd.innerHTML+=`<div class="hd-result ${rc}">${h.result||'\u2014'} \u00b7 ${h.score}</div>`;sd.appendChild(hd);});const bd=document.createElement('div');bd.className='hd-bets-table';const pp=s.ppBet>0?`<div class="hd-bet-line"><span>PP</span><span>\u20ac${s.ppBet}</span><span class="${s.ppNet>=0?'hist-pos':'hist-neg'}">${s.ppNet>=0?'+':''}\u20ac${Math.abs(s.ppNet)}</span></div>`:'';const sp=s.spBet>0?`<div class="hd-bet-line"><span>21+3</span><span>\u20ac${s.spBet}</span><span class="${s.spNet>=0?'hist-pos':'hist-neg'}">${s.spNet>=0?'+':''}\u20ac${Math.abs(s.spNet)}</span></div>`:'';bd.innerHTML=`<div class="hd-bet-line hd-bet-header"><span>Bet</span><span>Amount</span><span>Net</span></div><div class="hd-bet-line"><span>Main</span><span>\u20ac${s.mainBet}</span><span class="${s.mainNet>=0?'hist-pos':'hist-neg'}">${s.mainNet>=0?'+':''}\u20ac${Math.abs(s.mainNet)}</span></div>${pp}${sp}`;sd.appendChild(bd);seatsDiv.appendChild(sd);});body.innerHTML='';const back=document.createElement('div');back.className='hist-detail-back-row';back.innerHTML='<button class="hist-detail-back" id="hd-back">\u2039 Back</button>';const meta=document.createElement('div');meta.className='hist-detail-meta';meta.innerHTML=`<b>${entry.tableName}</b><br>${t} \u00b7 Room <b>${entry.roomCode}</b><br>Bet \u20ac${entry.totalBet} \u00a0 Net: <b class="${nc}">${entry.netCash>=0?'+':''}\u20ac${Math.abs(entry.netCash).toFixed(2)}</b>`;const ds=document.createElement('div');ds.className='hd-dealer-row';ds.innerHTML=`<span class="hd-section-label">Dealer \u00b7 ${score(entry.dealerCards||[])}</span>`;ds.appendChild(dealerRow);body.appendChild(back);body.appendChild(meta);body.appendChild(ds);body.appendChild(seatsDiv);$('hd-back').addEventListener('click',()=>renderHistoryList(body));}
+function openRoundDetail(entry){
+  const panel=$('history-panel');if(!panel)return;
+  const body=$('history-body');if(!body)return;
+  const t=new Date(entry.time).toLocaleString('en-GB',{weekday:'short',day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'});
+  const nc=entry.netCash>=0?'hist-pos':'hist-neg';
+  body.innerHTML='';
+  // Back button
+  const back=document.createElement('div');back.className='hist-detail-back-row';
+  back.innerHTML='<button class="hist-detail-back" id="hd-back">\u2039 Back</button>';
+  body.appendChild(back);
+  // Meta
+  const meta=document.createElement('div');meta.className='hist-detail-meta';
+  meta.innerHTML=`<b>${entry.tableName}</b><br>${t} \u00b7 Room <b>${entry.roomCode}</b><br>Bet \u20ac${entry.totalBet} &nbsp; Net: <b class="${nc}">${entry.netCash>=0?'+':''}\u20ac${Math.abs(entry.netCash).toFixed(2)}</b>`;
+  body.appendChild(meta);
+  // Table seat map
+  if(entry.seatMap){
+    const mapDiv=document.createElement('div');mapDiv.className='hd-table-map';
+    mapDiv.innerHTML='<div class="hd-table-map-title">Seats</div>';
+    const row=document.createElement('div');row.className='hd-table-row';
+    entry.seatMap.forEach(s=>{
+      const dot=document.createElement('div');
+      dot.className='hd-seat-dot'+(s.mine?' mine':s.taken?' taken':'');
+      dot.textContent=s.n;
+      row.appendChild(dot);
+    });
+    mapDiv.appendChild(row);
+    body.appendChild(mapDiv);
+  }
+  // Dealer hand — above seats, cards centered
+  const ds=document.createElement('div');ds.className='hd-dealer-row';
+  const dScore=score(entry.dealerCards||[]);
+  ds.innerHTML=`<span class="hd-section-label">Dealer${dScore>21?' \u00b7 Bust':dScore?' \u00b7 '+dScore:''}</span>`;
+  const dealerRow=document.createElement('div');dealerRow.className='hd-cards-row hd-cards-centered';
+  (entry.dealerCards||[]).forEach(c=>dealerRow.appendChild(mkHistCard(c)));
+  ds.appendChild(dealerRow);body.appendChild(ds);
+  // Seats
+  const seatsDiv=document.createElement('div');seatsDiv.className='hd-seats';
+  entry.seats.forEach(s=>{
+    const sd=document.createElement('div');sd.className='hd-seat';
+    sd.innerHTML=`<div class="hd-seat-label">Seat ${s.sid}</div>`;
+    s.hands.forEach((h,hi)=>{
+      const hd=document.createElement('div');hd.className='hd-hand';
+      if(s.hands.length>1)hd.innerHTML=`<div class="hd-section-label">Hand ${hi+1}</div>`;
+      const cr=document.createElement('div');cr.className='hd-cards-row';
+      h.cards.forEach((c,ci)=>{
+        const img=mkHistCard(c);
+        const dec=h.decisions?.[ci];
+        if(dec&&dec!=='stand'){
+          const chip=document.createElement('span');
+          chip.className='hd-move-chip '+(dec==='hit'?'hit-chip':dec==='double'?'double-chip':'bust-chip');
+          chip.textContent=dec==='hit'?'+':dec==='double'?'2×':'✕';
+          const wrap=document.createElement('div');wrap.style.cssText='display:flex;flex-direction:column;align-items:center;gap:1px;';
+          wrap.appendChild(img);wrap.appendChild(chip);cr.appendChild(wrap);
+        } else {
+          cr.appendChild(img);
+        }
+      });
+      // Show stand marker after cards if player stood (not busted)
+      if(h.stood){const sc=document.createElement('span');sc.className='hd-move-chip stand-chip';sc.textContent='−';cr.appendChild(sc);}
+      const rc=h.result?.toLowerCase().includes('win')?'res-win':h.result?.toLowerCase().includes('push')?'res-push':'res-lose';
+      const resLabel=h.result?.toLowerCase().includes('win')?'Win':h.result?.toLowerCase().includes('push')?'Push':'Lose';
+      hd.appendChild(cr);
+      hd.innerHTML+=`<div class="hd-result ${rc}">${resLabel}</div>`;
+      sd.appendChild(hd);
+    });
+    // Bets table
+    const bd=document.createElement('div');bd.className='hd-bets-table';
+    const fmtNet=(n)=>`<span class="${n>=0?'hist-pos':'hist-neg'}">${n>=0?'+':''}\u20ac${Math.abs(n)}</span>`;
+    const pp=s.ppBet>0?`<div class="hd-bet-line"><span>PP</span><span>\u20ac${s.ppBet}</span>${fmtNet(s.ppNet)}</div>`:'';
+    const sp2=s.spBet>0?`<div class="hd-bet-line"><span>21+3</span><span>\u20ac${s.spBet}</span>${fmtNet(s.spNet)}</div>`:'';
+    bd.innerHTML=`<div class="hd-bet-line hd-bet-header"><span>Bet</span><span>Amount</span><span>Net</span></div><div class="hd-bet-line"><span>Main</span><span>\u20ac${s.mainBet}</span>${fmtNet(s.mainNet)}</div>${pp}${sp2}`;
+    sd.appendChild(bd);seatsDiv.appendChild(sd);
+  });
+  body.appendChild(seatsDiv);
+  $('hd-back').addEventListener('click',()=>renderHistoryList(body));
+}
