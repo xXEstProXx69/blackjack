@@ -4,19 +4,43 @@
 const express    = require('express');
 const http       = require('http');
 const { Server } = require('socket.io');
+const { randomInt } = require('crypto');
 const path       = require('path');
 
 const app    = express();
 const server = http.createServer(app);
 const io     = new Server(server, { cors: { origin: '*' } });
+const DEAL_LAB_ENABLED = process.env.DEAL_LAB === 'true';
 
 app.use(express.static(path.join(__dirname, 'client')));
+app.use(express.json());
+
+// Public rooms list endpoint
+app.get('/api/rooms', (req, res) => {
+  const list = Object.values(rooms)
+    .filter(r => r.isPublic)
+    .map(r => ({
+      code: r.code,
+      name: r.roomName || 'Table',
+      players: Object.keys(r.players).length,
+      maxPlayers: 5,
+      seatsOpen: 5 - Object.keys(r.players).length,
+      hasPassword: !!r.password,
+      startingBalance: r.startingBalance || 5000,
+      hostName: Object.values(r.players).find(p => p.isHost)?.name || '?',
+      gameStatus: r.gs.gameStatus,
+    }));
+  res.json(list);
+});
 
 const rooms = {};
 
+const ALPHANUM = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // 32 chars, no ambiguous 0/O/1/I
 function makeCode() {
   let c;
-  do { c = String(Math.floor(1000 + Math.random() * 9000)); } while (rooms[c]);
+  do {
+    c = Array.from({length: 6}, () => ALPHANUM[randomInt(0, ALPHANUM.length)]).join('');
+  } while (rooms[c]);
   return c;
 }
 
@@ -27,10 +51,17 @@ function makeGs() {
     splitActive:    { 1:false, 2:false, 3:false, 4:false, 5:false },
     splitHandIndex: { 1:0, 2:0, 3:0, 4:0, 5:0 },
     splitBets:      { 1:0, 2:0, 3:0, 4:0, 5:0 },
+    splitFromAces:  { 1:false, 2:false, 3:false, 4:false, 5:false },
     doubled:        { 1:false, 2:false, 3:false, 4:false, 5:false },
     doubledHands:   { 1:{hand1:false,hand2:false}, 2:{hand1:false,hand2:false}, 3:{hand1:false,hand2:false}, 4:{hand1:false,hand2:false}, 5:{hand1:false,hand2:false} },
     deck:           [],
+    forcedCards:    null,
+    isTrainingMode: false,
+    betTimerEnabled: true,  // { dealer:[c1,c2], seats:{sid:[c1,c2]}, nextHit:{sid:card} }
+    dealLabEnabled: false,
     gameStatus:     'idle',
+    roundLock:      false,  // blocks actions during critical async phases
+    splitAnimStep:  {},     // {sid: 0|1|2} — which animation frame client should show
     activeSeats:    [],
     seatOwners:     {},
     currentSeatIndex: 0,
@@ -57,11 +88,16 @@ function buildDeck() {
   let d = [];
   for (let n = 0; n < 6; n++) S.forEach(s => V.forEach(v => d.push({suit:s,value:v})));
   for (let i = d.length-1; i > 0; i--) {
-    const j = Math.floor(Math.random()*(i+1)); [d[i],d[j]]=[d[j],d[i]];
+    const j = randomInt(0, i+1); [d[i],d[j]]=[d[j],d[i]];
   }
   return d;
 }
 
+function isNaturalBJ(hand) {
+  if (!Array.isArray(hand) || hand.length !== 2) return false;
+  const vals = hand.map(c => c.value);
+  return vals.includes('A') && vals.some(v => ['10','J','Q','K'].includes(v));
+}
 function score(hand) {
   if (!Array.isArray(hand) || !hand.length) return 0;
   let total = 0, aces = 0;
@@ -114,7 +150,18 @@ function broadcast(code) {
 }
 
 function dealTo(gs, target) {
-  const card = gs.deck.pop();
+  let card = null;
+  // Check if there's a forced card override
+  if (gs.forcedCards && gs.dealLabEnabled) {
+    if (target === 'dealer' && gs.forcedCards.dealer && gs.forcedCards.dealer.length) {
+      card = gs.forcedCards.dealer.shift();
+    } else if (target !== 'dealer') {
+      const sid = String(target);
+      const fc = gs.forcedCards.seats?.[sid];
+      if (fc && fc.length) { card = fc.shift(); }
+    }
+  }
+  if (!card) card = gs.deck.pop();
   if (!card) return;
   if (target === 'dealer') { gs.hands.dealer.push(card); return; }
   const sid = String(target);
@@ -133,6 +180,7 @@ function initHandsForSeats(gs) {
     gs.splitActive[sid] = false;
     gs.splitHandIndex[sid] = 0;
     gs.splitBets[sid] = 0;
+    gs.splitFromAces[sid] = false;
     gs.doubled[sid] = false;
     gs.doubledHands[sid] = {hand1:false,hand2:false};
   }
@@ -141,6 +189,7 @@ function initHandsForSeats(gs) {
 function startBetTimer(code) {
   const room = rooms[code];
   if (!room || room.betTimerTimeout) return;
+  if (!room.gs.betTimerEnabled) return; // disabled by host
   room.betTimerSecsLeft = 15;
   room.betTimerTimeout = setInterval(() => {
     // Cancel immediately if no bets at all
@@ -215,10 +264,7 @@ function offerInsurance(code) {
   gs.insuranceResponses = {};
 
   // Helper: does this seat have blackjack?
-  const hasBJ = (sid) => {
-    const hand = gs.hands[sid];
-    return Array.isArray(hand) && hand.length === 2 && score(hand) === 21;
-  };
+  const hasBJ = (sid) => isNaturalBJ(gs.hands[sid]);
 
   // Build per-seat queue: skip seats that already have BJ
   const eligibleSeats = Object.entries(gs.seatOwners)
@@ -251,47 +297,75 @@ function advanceInsuranceQueue(code) {
     return;
   }
   const { sid, ownerId } = gs.insuranceQueue[gs.insuranceQueueIndex];
+  const cost = Math.floor((gs.bets[sid]?.main || 0) / 2);
+  const owner = room.players[ownerId];
+  // If player can't afford insurance, skip them automatically
+  if (!owner || owner.wallet < cost) {
+    gs.insuranceQueueIndex++;
+    advanceInsuranceQueue(code);
+    return;
+  }
   gs.insuranceCurrentSid = sid;
   broadcast(code);
-  // Emit to the owner of this seat
-  io.to(ownerId).emit('insuranceOfferSeat', {
-    sid,
-    cost: Math.floor((gs.bets[sid]?.main || 0) / 2),
-  });
+  io.to(ownerId).emit('insuranceOfferSeat', { sid, cost });
+  // Auto-advance if no response in 20s
+  const _qIdx = gs.insuranceQueueIndex;
+  setTimeout(() => {
+    if (!rooms[code] || !rooms[code].gs.insurancePhase) return;
+    if (rooms[code].gs.insuranceQueueIndex !== _qIdx) return; // already advanced
+    rooms[code].gs.insuranceQueueIndex++;
+    advanceInsuranceQueue(code);
+  }, 20000);
 }
 
-function checkBJ(code) {
+// Shared: mark player BJ badges for all non-split natural BJ hands.
+// Must be called before resolveMain regardless of path.
+function markPlayerBJBadges(gs) {
+  for (const sid of gs.activeSeats) {
+    const hand = gs.hands[sid];
+    if (!gs.splitActive[sid] && isNaturalBJ(hand)) {
+      if (!gs.badges[sid]) gs.badges[sid] = [];
+      // Don't double-mark if already set (e.g. called twice by mistake)
+      if (!gs.badges[sid].some(b => b.cls === 'bj')) {
+        gs.badges[sid].push({ cls:'bj', text:'Blackjack!' });
+      }
+    }
+  }
+}
+
+// Shared: pay out insurance bets when dealer has BJ.
+function payInsurance(gs, players) {
+  for (const sid of gs.activeSeats) {
+    const ins = gs.insurance[sid] || 0;
+    if (ins > 0) {
+      const player = players[gs.seatOwners[sid]];
+      if (player) player.wallet += ins * 3;
+    }
+  }
+}
+
+async function checkBJ(code) {
   const room = rooms[code];
   const { gs, players } = room;
 
-  // Only resolve dealer BJ early if upcard is Ace (insurance was offered).
-  // If dealer has BJ with a 10/face showing, the game continues; dealer
-  // reveals naturally at dealer_turn and resolveMain handles it via dBust/ds.
   const upCard = gs.hands.dealer[0];
-  const dBJ = score(gs.hands.dealer) === 21 && gs.hands.dealer.length === 2;
+  const dBJ = isNaturalBJ(gs.hands.dealer);
 
-  if (dBJ && upCard && upCard.value === 'A') {
-    for (const sid of gs.activeSeats) {
-      const ins = gs.insurance[sid] || 0;
-      if (ins > 0) {
-        const player = players[gs.seatOwners[sid]];
-        if (player) player.wallet += ins * 3;
-      }
-    }
+  if (dBJ) {
+    // Dealer has natural BJ — reveal hole card, settle all bets immediately
+    gs.dealerRevealed = true;
+    broadcast(code);
+    await delay(1400);
+
+    // ALWAYS mark player BJ badges before resolution (both upcard paths unified here)
+    markPlayerBJBadges(gs);
+    payInsurance(gs, players);
     resolveMain(code, true);
     return;
   }
 
-  for (const sid of gs.activeSeats) {
-    const hand = gs.hands[sid];
-    const pBJ  = Array.isArray(hand) && hand.length === 2 && score(hand) === 21;
-    if (pBJ) {
-      // Mark badge only — payout happens in resolveMain after dealer plays
-      if (!gs.badges[sid]) gs.badges[sid] = [];
-      gs.badges[sid].push({ cls:'bj', text:'Blackjack!' });
-    }
-  }
-
+  // No dealer BJ — mark any player BJ badges then start play
+  markPlayerBJBadges(gs);
   broadcast(code);
   gs.gameStatus = 'playing';
   gs.currentSeatIndex = 0;
@@ -355,13 +429,15 @@ function dealerTurn(code) {
     gs.dealerRevealed = true;
     broadcast(code);
     function dealerStep() {
-    if (score(gs.hands.dealer) < 17) {
-      dealTo(gs, 'dealer');
-      broadcast(code);
-      setTimeout(dealerStep, 700);
-    } else {
-      resolveMain(code, false);
-    }
+      if (score(gs.hands.dealer) < 17) {
+        dealTo(gs, 'dealer');
+        broadcast(code);
+        setTimeout(dealerStep, 700);
+      } else {
+        // Check if dealer has natural BJ (21 in exactly 2 cards)
+        const dealerHasBJ = isNaturalBJ(gs.hands.dealer);
+        resolveMain(code, dealerHasBJ);
+      }
     }
     setTimeout(dealerStep, 800);
   }, 2500);
@@ -450,8 +526,16 @@ function newRound(code) {
   }
 
   const savedOwners = { ...gs.seatOwners };
+  const savedLabEnabled = gs.dealLabEnabled;
+  const savedTrainingMode = gs.isTrainingMode;
+  const savedForcedCards = gs.forcedCards;
+  const savedBetTimer = gs.betTimerEnabled;
   Object.assign(gs, makeGs());
   gs.seatOwners    = savedOwners;
+  gs.dealLabEnabled = savedLabEnabled;
+  gs.isTrainingMode = savedTrainingMode;
+  gs.forcedCards    = savedForcedCards;
+  gs.betTimerEnabled = savedBetTimer;
   gs.gameStatus    = 'betting';
   gs.deck          = buildDeck();
   gs.lastRoundBets = byPlayer;
@@ -467,8 +551,13 @@ async function startDeal(code) {
   if (gs.activeSeats.length === 0) return;
 
   gs.gameStatus = 'dealing';
+  gs.roundLock = true; // lock during initial deal
   gs.deck = buildDeck();
   initHandsForSeats(gs);
+  // Refresh forced cards from stored config each round if lab is enabled
+  if (gs.dealLabEnabled && room.forcedConfig) {
+    gs.forcedCards = JSON.parse(JSON.stringify(room.forcedConfig));
+  }
   gs.sideBetWins    = {};
   gs.badges         = {};
   gs.bustSeats      = {};
@@ -486,6 +575,9 @@ async function startDeal(code) {
   for (const sid of rtl) { dealTo(gs, sid); broadcast(code); await delay(300); }
   dealTo(gs, 'dealer'); broadcast(code); await delay(500);
 
+  // Deal Lab: forcedCards persist as long as dealLabEnabled — refill from stored config
+  // (nextHit is consumed per-hit; dealer/seats refill on each new deal from gs.forcedCards)
+  gs.roundLock = false; // initial deal complete, unlock for insurance/play
   resolveSideBets(code);
   broadcast(code);
   await delay(200);
@@ -533,38 +625,47 @@ function assignNewHost(code) {
 }
 
 io.on('connection', (socket) => {
-  socket.on('createRoom', ({ name, wallet, token }) => {
+  socket.on('createRoom', ({ name, wallet, token, roomName, isPublic, password, startingBalance }) => {
     const code = makeCode();
-    rooms[code] = { code, gs: makeGs(), players: {}, betTimerTimeout: null, hostId: socket.id, joinCounter: 0, banList: new Set() };
+    const bal = Math.max(100, Math.min(1000000, parseInt(startingBalance) || 5000));
+    const rName = (roomName || '').trim().slice(0, 32) || (isPublic ? 'Public Table' : 'Private Table');
+    rooms[code] = {
+      code, gs: makeGs(), players: {}, betTimerTimeout: null,
+      hostId: socket.id, joinCounter: 0, banList: new Set(),
+      isPublic: !!isPublic,
+      roomName: rName,
+      password: password ? String(password).slice(0, 32) : null,
+      startingBalance: bal,
+    };
     rooms[code].gs.gameStatus = 'betting';
     rooms[code].gs.deck = buildDeck();
-    rooms[code].players[socket.id] = { name, wallet: wallet||5000, totalBet:0, isHost:true, joinOrder:0 };
+    rooms[code].players[socket.id] = { name, wallet: bal, totalBet:0, isHost:true, joinOrder:0 };
     socket.join(code);
     socket.data.code = code;
     socket.data.name = name;
     socket.data.token = token || socket.id;
-    socket.emit('roomJoined', { code, socketId: socket.id, isHost: true });
+    socket.emit('roomJoined', { code, socketId: socket.id, isHost: true, roomName: rName, isPublic: !!isPublic });
     broadcast(code);
   });
 
-  socket.on('joinRoom', ({ code, name, wallet, token }) => {
+  socket.on('joinRoom', ({ code, name, wallet, token, password }) => {
     const room = rooms[code];
     if (!room) { socket.emit('roomError', 'Room not found'); return; }
     if (Object.keys(room.players).length >= 5) { socket.emit('roomError', 'Room is full'); return; }
-    const playerToken = token || socket.id;
-    if (room.banList && room.banList.has(playerToken)) {
-      socket.emit('banned');
-      return;
+    if (room.password && room.password !== String(password || '')) {
+      socket.emit('roomError', 'Wrong password'); return;
     }
+    const playerToken = token || socket.id;
+    if (room.banList && room.banList.has(playerToken)) { socket.emit('banned'); return; }
     socket.data.token = playerToken;
     room.joinCounter = (room.joinCounter||0) + 1;
-    room.players[socket.id] = { name, wallet: wallet||5000, totalBet:0, isHost:false, joinOrder: room.joinCounter };
+    const bal = room.startingBalance || 5000;
+    room.players[socket.id] = { name, wallet: bal, totalBet:0, isHost:false, joinOrder: room.joinCounter };
     socket.join(code);
     socket.data.code = code;
     socket.data.name = name;
-    socket.emit('roomJoined', { code, socketId: socket.id, isHost: false });
+    socket.emit('roomJoined', { code, socketId: socket.id, isHost: false, roomName: room.roomName, isPublic: room.isPublic });
     broadcast(code);
-    // Joining players auto-launch straight into the game
     io.to(socket.id).emit('autoLaunch');
   });
 
@@ -698,7 +799,7 @@ io.on('connection', (socket) => {
     gs.bets[sid][type] += allowed;
     gs.gameStatus = 'betting';
     if (type === 'main' && !gs.activeSeats.includes(sid)) gs.activeSeats.push(sid);
-    const groupId = 'grp_' + Date.now() + '_' + Math.random();
+    const groupId = 'grp_' + Date.now() + '_' + randomInt(0, 1000000);
     gs.betHistory.push({ socketId: socket.id, sid, type, amt: allowed, groupId });
     // Mirror
     const mySeats = Object.entries(gs.seatOwners).filter(([s,id]) => id === socket.id && s !== sid).map(([s])=>s);
@@ -810,12 +911,21 @@ io.on('connection', (socket) => {
     const room = rooms[code];
     if (!room || room.gs.gameStatus !== 'playing') return;
     const { gs, players } = room;
+    if (gs.roundLock) return; // deck mutation in progress, block all actions
     const rtl = rtlOrder(gs);
     if (rtl[gs.currentSeatIndex] !== sid) return;
     if (gs.seatOwners[sid] !== socket.id) return;
     const player = players[socket.id];
 
     if (action === 'hit') {
+      // Block hitting on split aces
+      if (gs.splitActive[sid] && gs.splitFromAces[sid]) return;
+      // Inject forced next-hit card at top of deck if set
+      if (gs.dealLabEnabled && gs.forcedCards?.nextHit?.[sid]) {
+        gs.deck.push(gs.forcedCards.nextHit[sid]);
+        delete gs.forcedCards.nextHit[sid];
+        if (!Object.keys(gs.forcedCards.nextHit).length) delete gs.forcedCards.nextHit;
+      }
       dealTo(gs, sid);
       const hand = gs.splitActive[sid] ? gs.hands[sid]['hand'+(gs.splitHandIndex[sid]+1)] : gs.hands[sid];
       const sc = score(hand);
@@ -853,11 +963,48 @@ io.on('connection', (socket) => {
       if (!player || player.wallet < splitBet) return;
       player.wallet -= splitBet; player.totalBet += splitBet;
       gs.splitBets[sid] = splitBet;
-      const n1 = gs.deck.pop(), n2 = gs.deck.pop();
-      gs.hands[sid] = { hand1: [hand[0], n1], hand2: [hand[1], n2] };
+      gs.splitFromAces[sid] = (hand[0].value === 'A');
+
+      // Draw both second cards NOW — deterministic, no delayed deck access
+      const n1 = gs.deck.pop();
+      const n2 = gs.deck.pop();
+
+      // Step 0: show split cards separated (no second cards yet)
+      gs.hands[sid] = { hand1: [hand[0]], hand2: [hand[1]] };
       gs.splitActive[sid] = true; gs.splitHandIndex[sid] = 0;
+      gs.splitAnimStep[sid] = 0;
+      gs.roundLock = true;
       broadcast(code);
-      io.to(code).emit('yourTurn', { sid, handIdx: 0, ownerId: gs.seatOwners[sid] });
+
+      // Step 1 (400ms): reveal hand1 second card
+      setTimeout(() => {
+        if (!rooms[code]) return;
+        if (n1) gs.hands[sid].hand1.push(n1);
+        gs.splitAnimStep[sid] = 1;
+        broadcast(code);
+
+        // Step 2 (800ms): reveal hand2 second card + unlock + fire yourTurn
+        setTimeout(() => {
+          if (!rooms[code]) return;
+          if (n2) gs.hands[sid].hand2.push(n2);
+          gs.splitAnimStep[sid] = 2;
+          gs.roundLock = false;
+          broadcast(code);
+
+          // Auto-advance or prompt
+          if (gs.splitFromAces[sid]) {
+            gs.splitHandIndex[sid] = 1;
+            broadcast(code);
+            setTimeout(() => { if (rooms[code]) advanceSeat(code, sid); }, 300);
+          } else if (score(gs.hands[sid].hand1) === 21) {
+            gs.splitHandIndex[sid] = 1;
+            broadcast(code);
+            io.to(code).emit('yourTurn', { sid, handIdx: 1, ownerId: gs.seatOwners[sid] });
+          } else {
+            io.to(code).emit('yourTurn', { sid, handIdx: 0, ownerId: gs.seatOwners[sid] });
+          }
+        }, 400);
+      }, 400);
     }
   });
 
@@ -865,6 +1012,7 @@ io.on('connection', (socket) => {
     const code = socket.data.code;
     const room = rooms[code];
     if (!room || !room.gs.insurancePhase) return;
+    if (room.gs.roundLock) return;
     const { gs, players } = room;
     const player = players[socket.id];
     // Must be the owner of the current seat in queue
@@ -881,6 +1029,40 @@ io.on('connection', (socket) => {
     }
     gs.insuranceQueueIndex++;
     advanceInsuranceQueue(code);
+  });
+
+  socket.on('setBetTimerEnabled', ({ enabled }) => {
+    const code = socket.data.code;
+    const room = rooms[code];
+    if (!room || room.hostId !== socket.id) return;
+    room.gs.betTimerEnabled = !!enabled;
+    // Cancel running timer if disabled
+    if (!enabled && room.betTimerTimeout) {
+      clearInterval(room.betTimerTimeout);
+      room.betTimerTimeout = null;
+      io.to(code).emit('timerCancel');
+    }
+    broadcast(code); // push gs.betTimerEnabled to all clients immediately
+  });
+
+  socket.on('dealLabToggle', ({ on }) => {
+    if (!DEAL_LAB_ENABLED) return;
+    const code = socket.data.code;
+    const room = rooms[code];
+    if (!room || room.hostId !== socket.id) return;
+    room.gs.dealLabEnabled = !!on;
+    room.gs.isTrainingMode = !!on;
+    broadcast(code);
+  });
+
+  socket.on('forceDeck', (forced) => {
+    if (!DEAL_LAB_ENABLED) return;
+    const code = socket.data.code;
+    const room = rooms[code];
+    if (!room || room.hostId !== socket.id) return;
+    // Deep copy stored config so each round gets fresh copies
+    room.forcedConfig = JSON.parse(JSON.stringify(forced));
+    room.gs.forcedCards = JSON.parse(JSON.stringify(forced));
   });
 
   socket.on('disconnect', () => {
@@ -900,7 +1082,16 @@ io.on('connection', (socket) => {
       delete rooms[code];
     } else {
       if (room.hostId === socket.id) assignNewHost(code);
-      else broadcast(code);
+      // If disconnected player was current insurance respondent, advance the queue
+      if (room.gs.insurancePhase && room.gs.insuranceCurrentSid) {
+        const wasCurrentInsurer = room.gs.insuranceQueue?.[room.gs.insuranceQueueIndex]?.ownerId === socket.id;
+        if (wasCurrentInsurer) {
+          room.gs.insuranceQueueIndex++;
+          advanceInsuranceQueue(code);
+          return; // advanceInsuranceQueue calls broadcast
+        }
+      }
+      broadcast(code);
     }
   });
 });
