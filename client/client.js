@@ -7,6 +7,7 @@ let activeTurnSid=null,activeTurnHandIdx=0,prevGs=null,winOverlayShown=false;
 let actionPending=false,sfxVolume=0.4,currentRoundLog=null;
 let countdownRafId=null,countdownStart=0,countdownTotal=15000;
 let autoplayOn=false,autoplayThreshold=17,bjSoundedSeats=new Set(),shownSideBetPills=new Set();
+let _pendingCountdownSid=null,_countdownGen=0;
 const _prevScores={};
 const _scoreOverride={}; // pillId → {text, locked} — persists until real value arrives
 const CHIP_COLORS={1:'#e8e8e8,#b0b0b0',2:'#d0d0d0,#888',5:'#e03030,#900',10:'#1a7ad4,#0a4a9a',25:'#2da84e,#155a28',50:'#c07020,#804010',100:'#222,#111',200:'#b050f0,#6000b0',500:'#8030a0,#400060',1000:'#e0b000,#a07000',2000:'#e07030,#c03000',5000:'#10b0b0,#006060',10000:'#f050a0,#900040'};
@@ -74,10 +75,13 @@ socket.on('timerCancel',()=>hide('bet-timer-wrap'));
 socket.on('yourTurn',({sid,handIdx,ownerId})=>{
   activeTurnSid=sid;activeTurnHandIdx=handIdx||0;actionPending=false;stopCountdown();
   if(ownerId===mySocketId){
-    // Small delay to let any in-progress card animation finish before showing buttons
+    _pendingCountdownSid=sid;
+    const myGen=++_countdownGen;
     setTimeout(()=>{
+      if(_countdownGen!==myGen)return;
       showPlayButtons(sid,handIdx||0);
       setTimeout(()=>{
+        if(_countdownGen!==myGen)return;
         const pb=$('play-buttons');
         if(pb&&!pb.classList.contains('betting-hidden')&&!pb.classList.contains('hidden'))
           startCountdown(15000,()=>autoPlayAction(sid,handIdx||0));
@@ -88,7 +92,7 @@ socket.on('yourTurn',({sid,handIdx,ownerId})=>{
   }
 });
 socket.on('dealVote',({ready,needed,readyIds})=>{const b=$('btn-deal');if(!b)return;if(readyIds.includes(mySocketId)){b.textContent=`Waiting\u2026 (${ready}/${needed})`;b.disabled=true;b.style.opacity='0.6';}else{b.textContent=`Deal (${ready}/${needed} ready)`;b.disabled=false;b.style.opacity='1';}});
-socket.on('stateUpdate',({gs})=>{if(gs.gameStatus==='betting'){winOverlayShown=false;activeTurnSid=null;actionPending=false;bjSoundedSeats.clear();shownSideBetPills.clear();stopCountdown();hide('play-buttons');const db=$('btn-deal');if(db){db.disabled=false;db.style.opacity='1';db.textContent='DEAL';}document.querySelectorAll('.card,.card-back').forEach(c=>c.classList.add('fly-out'));stopDealCountdown();document.querySelectorAll('.circle-win-label,.win-chip-stack,.chip-stack,.sidebet-win-pill').forEach(e=>e.remove());Object.keys(_prevScores).forEach(k=>delete _prevScores[k]);Object.keys(_scoreOverride).forEach(k=>delete _scoreOverride[k]);}});
+
 
 // ── Smooth countdown rectangle ─────────────────────────────────
 function startCountdown(durationMs,onTimeout){
@@ -265,6 +269,22 @@ function buildAndSaveHistory(gs,players){
 
 // ── Render State ───────────────────────────────────────────────
 function renderState(gs,players,hostId){
+  // Betting phase reset — runs BEFORE chip rendering so re-render adds chips back correctly
+  if(gs.gameStatus==='betting'){
+    winOverlayShown=false;activeTurnSid=null;actionPending=false;
+    bjSoundedSeats.clear();shownSideBetPills.clear();stopCountdown();
+    hide('play-buttons');
+    const db=$('btn-deal');if(db){db.disabled=false;db.style.opacity='1';db.textContent='DEAL';}
+    document.querySelectorAll('.card,.card-back').forEach(c=>c.classList.add('fly-out'));
+    stopDealCountdown();
+    document.querySelectorAll('.circle-win-label,.win-chip-stack,.sidebet-win-pill').forEach(e=>e.remove());
+    document.querySelectorAll('.chip-stack').forEach(e=>e.remove());
+    Object.keys(_prevScores).forEach(k=>delete _prevScores[k]);
+    Object.keys(_scoreOverride).forEach(k=>delete _scoreOverride[k]);
+    _pendingCountdownSid=null;
+    // Cancel any stale score animation tokens on all pills
+    document.querySelectorAll('.score-display,.split-score').forEach(p=>{p._animTok=(p._animTok||0)+1;});
+  }
   const pList=$('players-list');
   if(pList)pList.innerHTML=Object.entries(players).map(([id,p])=>`<div class="player-entry ${id===mySocketId?'me':''}"><span class="pe-name">${id===hostId?'\ud83d\udc51 ':''}${p.name}</span><span class="pe-wallet">\u20ac${p.wallet.toLocaleString()}</span></div>`).join('');
   const me=players[mySocketId];
@@ -424,22 +444,22 @@ function animateScoreUpdate(pill,newVal){
   const id=pill.id;
   const ovr=_scoreOverride[id];
   if(ovr){
-    // An action override is set ('+', '−', '2×')
-    // If the value actually changed (card arrived), clear override and show new value
-    if(_prevScores[id]!==undefined&&newVal!==_prevScores[id]){
+    // Track incoming value so stand restore always has the latest score
+    _prevScores[id]=newVal;
+    // For hit/double: if value changed vs what it was when we set the override, card arrived
+    if(ovr.text!=='−'&&ovr.baseVal!==undefined&&newVal!==ovr.baseVal){
       delete _scoreOverride[id];
-      _prevScores[id]=newVal;
+      const tok=++pill._animTok;
       bn.style.transition='opacity 0.2s';bn.style.opacity='0';
-      setTimeout(()=>{bn.textContent=newVal;bn.style.opacity='1';},200);
+      setTimeout(()=>{if(pill._animTok===tok){bn.textContent=newVal;bn.style.transition='opacity 0.2s';bn.style.opacity='1';}},200);
     }
-    // else value unchanged (stateUpdate before card arrived) — keep showing override
     return;
   }
-  if(_prevScores[id]===newVal){if(bn.textContent!==newVal){bn.textContent=newVal;}return;}
-  // Normal update — fade in new value
-  bn.style.transition='opacity 0.2s';bn.style.opacity='0';
-  setTimeout(()=>{bn.textContent=newVal;bn.style.opacity='1';},200);
+  if(_prevScores[id]===newVal){if(bn.textContent!==String(newVal))bn.textContent=newVal;return;}
   _prevScores[id]=newVal;
+  const tok=++pill._animTok;
+  bn.style.transition='opacity 0.2s';bn.style.opacity='0';
+  setTimeout(()=>{if(pill._animTok===tok){bn.textContent=newVal;bn.style.transition='opacity 0.2s';bn.style.opacity='1';}},200);
 }
 function renderScore(sid,gs){
   const el=$('score-'+sid);if(!el)return;
@@ -554,7 +574,9 @@ function showPlayButtons(sid,handIdx){
 }
 function doAction(action){
   if(!activeTurnSid||actionPending)return;
-  actionPending=true;stopCountdown();
+  actionPending=true;
+  _countdownGen++;_pendingCountdownSid=null;
+  stopCountdown();
   const pb=$('play-buttons');
   sfxClick();
   // Set score pill override immediately on action
@@ -568,19 +590,24 @@ function doAction(action){
       if(bn){
         const overrideText=action==='hit'?'+':action==='stand'?'−':action==='double'?'2×':null;
         if(overrideText){
-          _scoreOverride[pillId]={text:overrideText};
+          const baseVal=_prevScores[pillId];
+          _scoreOverride[pillId]={text:overrideText,baseVal};
+          pill._animTok=(pill._animTok||0)+1;
           bn.style.transition='opacity 0.15s';bn.style.opacity='0';
-          setTimeout(()=>{bn.textContent=overrideText;bn.style.opacity='0.75';},150);
+          setTimeout(()=>{bn.textContent=overrideText;bn.style.transition='';bn.style.opacity='0.75';},150);
           if(action==='stand'){
-            // For stand: show '−' briefly then fade back to number
+            // Capture current score now so restore is always accurate
+            const standRestoreVal=_prevScores[pillId]||bn.textContent||'';
+            const standTok=++pill._animTok;
             setTimeout(()=>{
-              bn.style.opacity='0';
+              if(pill._animTok!==standTok)return; // another action happened
+              delete _scoreOverride[pillId];
+              bn.style.transition='opacity 0.2s';bn.style.opacity='0';
               setTimeout(()=>{
-                delete _scoreOverride[pillId];
-                bn.textContent=bn.textContent===overrideText?(_prevScores[pillId]||''):bn.textContent;
-                bn.style.opacity='1';
-              },300);
-            },800);
+                bn.textContent=_prevScores[pillId]||standRestoreVal;
+                bn.style.transition='opacity 0.2s';bn.style.opacity='1';
+              },220);
+            },900);
           }
         }
       }
@@ -628,7 +655,7 @@ function showInsuranceForSeat(sid,cost){
     const pad=14, x=rect.left-pad, y=rect.top-pad;
     const w=rect.width+pad*2, h=rect.height+pad*2, rx=26;
     const mx=w/2;
-    const pathD=`M ${mx} 0 L ${w-rx} 0 Q ${w} 0 ${w} ${rx} L ${w} ${h-rx} Q ${w} ${h} ${w-rx} ${h} L ${rx} ${h} Q 0 ${h} 0 ${h-rx} L 0 ${rx} Q 0 0 ${rx} 0 Z`;
+    const pathD=`M ${mx} 0 L ${rx} 0 Q 0 0 0 ${rx} L 0 ${h-rx} Q 0 ${h} ${rx} ${h} L ${w-rx} ${h} Q ${w} ${h} ${w} ${h-rx} L ${w} ${rx} Q ${w} 0 ${w-rx} 0 L ${mx} 0`;
     const perim=2*(w-2*rx)+2*(h-2*rx)+2*Math.PI*rx;
     const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');
     svg.id='ins-countdown-svg';
