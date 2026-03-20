@@ -1,0 +1,335 @@
+/* ═══════════════════════════════════════════════════════
+   LOBBY — Kikikov BlackJack
+═══════════════════════════════════════════════════════ */
+
+/* ── Loading Screen ── */
+#loading-screen {
+  position:fixed;inset:0;z-index:10000;
+  background:radial-gradient(ellipse at 50% 40%, #1a3a1a 0%, #0a1a0a 100%);
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:28px;
+  transition:opacity .5s ease;
+}
+#loading-screen.fade-out { opacity:0; pointer-events:none; }
+.loading-logo { font-family:'Playfair Display',serif; font-size:2.8rem; color:#e8a020; letter-spacing:.12em; }
+.loading-suits { font-size:2rem; letter-spacing:.3em; color:rgba(255,255,255,0.5); animation:suitPulse 1.4s ease-in-out infinite; }
+@keyframes suitPulse { 0%,100%{opacity:.3;transform:scale(1)} 50%{opacity:1;transform:scale(1.08)} }
+.loading-bar-wrap { width:220px; height:4px; background:rgba(255,255,255,0.1); border-radius:4px; overflow:hidden; }
+.loading-bar { height:100%; width:0%; background:linear-gradient(90deg,#c8860a,#e8a020,#c8860a); border-radius:4px;
+  animation:loadFill 1.6s cubic-bezier(.4,0,.2,1) forwards; }
+@keyframes loadFill { 0%{width:0%} 60%{width:75%} 90%{width:92%} 100%{width:100%} }
+.loading-sub { font-family:'Rajdhani',sans-serif; font-size:.78rem; letter-spacing:.18em; color:rgba(255,255,255,0.3); text-transform:uppercase; }
+.loading-chips { display:flex; gap:10px; }
+.loading-chip { width:28px;height:28px;border-radius:50%;animation:chipSpin 1s ease-in-out infinite; }
+.loading-chip:nth-child(1){background:radial-gradient(circle at 35% 35%,#e83030,#980808);animation-delay:0s}
+.loading-chip:nth-child(2){background:radial-gradient(circle at 35% 35%,#40c8f8,#0878b8);animation-delay:.15s}
+.loading-chip:nth-child(3){background:radial-gradient(circle at 35% 35%,#f0b060,#d06010);animation-delay:.3s}
+.loading-chip:nth-child(4){background:radial-gradient(circle at 35% 35%,#80e040,#2a8010);animation-delay:.45s}
+.loading-chip:nth-child(5){background:radial-gradient(circle at 35% 35%,#9050d0,#400880);animation-delay:.6s}
+@keyframes chipSpin { 0%,100%{transform:translateY(0);opacity:.6} 50%{transform:translateY(-10px);opacity:1} }
+
+/* ── Lobby Wrapper ── */
+#lobby-screen {
+  position:fixed;inset:0;z-index:100;
+  background:radial-gradient(ellipse at 50% 35%, #1e4020 0%, #0c1e0e 60%, #060e06 100%);
+  overflow:hidden;display:flex;flex-direction:column;align-items:center;justify-content:flex-start;
+  padding:0;
+}
+#lobby-screen.hidden{display:none!important;}
+
+/* felt texture overlay */
+#lobby-screen::before {
+  content:'';position:absolute;inset:0;
+  background-image:repeating-linear-gradient(45deg,transparent,transparent 2px,rgba(0,0,0,0.03) 2px,rgba(0,0,0,0.03) 4px);
+  pointer-events:none;
+}
+
+/* ── Header ── */
+#lobby-header {
+  width:100%;max-width:960px;display:flex;align-items:center;justify-content:space-between;
+  padding:24px 32px 0;box-sizing:border-box;
+}
+#lobby-header-logo { display:flex;align-items:center;gap:12px; }
+#lobby-header-suits { font-size:1.3rem;color:#e8a020;letter-spacing:.08em; }
+#lobby-header-title { font-family:'Playfair Display',serif;font-size:1.3rem;color:#fff;letter-spacing:.06em; }
+#lobby-header-name-pill {
+  display:flex;align-items:center;gap:8px;
+  background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);
+  border-radius:24px;padding:8px 16px;cursor:pointer;transition:background .2s;
+}
+#lobby-header-name-pill:hover{background:rgba(255,255,255,0.1);}
+#lobby-header-name-pill span{font-family:'Rajdhani',sans-serif;font-size:.85rem;font-weight:700;color:rgba(255,255,255,0.8);}
+
+/* ── Hero ── */
+#lobby-hero {
+  display:flex;flex-direction:column;align-items:center;gap:6px;
+  padding:36px 0 28px;
+}
+#lobby-hero-title {
+  font-family:'Playfair Display',serif;font-size:3.2rem;color:#fff;letter-spacing:.08em;
+  text-shadow:0 4px 24px rgba(0,0,0,0.6);line-height:1;
+}
+#lobby-hero-sub {
+  font-family:'Rajdhani',sans-serif;font-size:.8rem;letter-spacing:.22em;text-transform:uppercase;
+  color:rgba(232,160,32,0.7);
+}
+
+/* ── Name Row ── */
+#lobby-name-row {
+  display:flex;gap:10px;align-items:center;margin-bottom:28px;
+}
+#lobby-name {
+  background:rgba(255,255,255,0.9);border:1px solid rgba(255,255,255,0.4);
+  color:#111;font-family:'Rajdhani',sans-serif;font-size:1rem;font-weight:600;
+  padding:11px 18px;border-radius:10px;outline:none;width:220px;
+  transition:border-color .2s;
+}
+#lobby-name:focus{border-color:rgba(232,160,32,0.8);}
+#lobby-name::placeholder{color:rgba(0,0,0,0.3);}
+
+/* ── Main Actions ── */
+#lobby-actions {
+  display:flex;gap:14px;margin-bottom:36px;flex-wrap:wrap;justify-content:center;
+}
+.lobby-action-btn {
+  display:flex;flex-direction:column;align-items:center;gap:6px;
+  padding:18px 28px;border-radius:14px;border:1px solid;cursor:pointer;
+  font-family:'Rajdhani',sans-serif;font-weight:700;font-size:.9rem;letter-spacing:.1em;
+  text-transform:uppercase;transition:all .2s;min-width:140px;
+  background:rgba(0,0,0,0.3);
+}
+.lobby-action-btn .btn-icon{font-size:1.8rem;line-height:1;}
+.lobby-action-btn:hover{transform:translateY(-2px);box-shadow:0 8px 28px rgba(0,0,0,0.4);}
+#btn-lobby-create{border-color:#e8a020;color:#e8a020;}
+#btn-lobby-create:hover{background:rgba(232,160,32,0.12);}
+#btn-lobby-public{border-color:rgba(100,200,255,0.5);color:rgba(100,200,255,0.9);}
+#btn-lobby-public:hover{background:rgba(100,200,255,0.08);}
+#btn-lobby-private{border-color:rgba(255,255,255,0.25);color:rgba(255,255,255,0.7);}
+#btn-lobby-private:hover{background:rgba(255,255,255,0.06);}
+
+#lobby-error{
+  font-family:'Rajdhani',sans-serif;font-size:.85rem;font-weight:700;letter-spacing:.06em;
+  color:#ef5350;text-align:center;min-height:22px;margin-bottom:8px;
+}
+
+/* ── Panels ── */
+.lobby-panel {
+  width:100%;max-width:780px;margin:0 16px;
+  background:rgba(0,0,0,0.35);border:1px solid rgba(255,255,255,0.08);
+  border-radius:18px;overflow:hidden;margin-bottom:24px;
+}
+.lobby-panel-header {
+  display:flex;align-items:center;justify-content:space-between;
+  padding:16px 22px;border-bottom:1px solid rgba(255,255,255,0.06);
+}
+.lobby-panel-title {
+  font-family:'Rajdhani',sans-serif;font-weight:700;font-size:.8rem;
+  letter-spacing:.18em;text-transform:uppercase;color:rgba(255,255,255,0.5);
+}
+.lobby-panel-close {
+  width:28px;height:28px;border-radius:50%;border:1px solid rgba(255,255,255,0.1);
+  background:none;cursor:pointer;color:rgba(255,255,255,0.4);font-size:1rem;
+  display:flex;align-items:center;justify-content:center;transition:all .2s;
+}
+.lobby-panel-close:hover{background:rgba(255,255,255,0.08);color:#fff;}
+
+/* ── Create Room Form ── */
+#lobby-create-panel{display:none;}
+#lobby-create-panel.open{display:block;}
+.create-form { padding:20px 22px 22px; display:flex;flex-direction:column;gap:14px; }
+.create-form-row { display:flex;gap:12px;flex-wrap:wrap; }
+.create-form-field { display:flex;flex-direction:column;gap:5px;flex:1;min-width:160px; }
+.create-form-field label {
+  font-family:'Rajdhani',sans-serif;font-size:.65rem;font-weight:700;
+  letter-spacing:.14em;text-transform:uppercase;color:rgba(255,215,0,0.6);
+}
+.create-form-field input[type=text],
+.create-form-field input[type=number],
+.create-form-field input[type=password] {
+  background:rgba(255,255,255,0.9);border:1px solid rgba(255,255,255,0.3);
+  color:#111;font-family:'Rajdhani',sans-serif;font-size:.9rem;font-weight:600;
+  padding:9px 13px;border-radius:8px;outline:none;transition:border-color .2s;
+}
+.create-form-field input:focus{border-color:rgba(232,160,32,0.7);}
+.create-form-field input::placeholder{color:rgba(0,0,0,0.3);}
+.room-type-toggle{display:flex;gap:0;border-radius:8px;overflow:hidden;border:1px solid rgba(255,255,255,0.12);}
+.room-type-btn{flex:1;padding:9px;background:rgba(255,255,255,0.04);border:none;cursor:pointer;
+  font-family:'Rajdhani',sans-serif;font-weight:700;font-size:.78rem;letter-spacing:.1em;
+  text-transform:uppercase;color:rgba(255,255,255,0.4);transition:all .15s;}
+.room-type-btn.active{background:rgba(232,160,32,0.18);color:#e8a020;}
+#btn-create-confirm{
+  padding:12px;border-radius:10px;border:1px solid #e8a020;background:rgba(232,160,32,0.12);
+  color:#e8a020;font-family:'Rajdhani',sans-serif;font-weight:900;font-size:1rem;
+  letter-spacing:.12em;text-transform:uppercase;cursor:pointer;transition:all .2s;
+}
+#btn-create-confirm:hover{background:rgba(232,160,32,0.24);}
+
+/* ── Join Private Form ── */
+#lobby-private-panel{display:none;}
+#lobby-private-panel.open{display:block;}
+.join-form{padding:20px 22px 22px;display:flex;gap:12px;align-items:flex-end;}
+.join-form .create-form-field{flex:1;}
+#btn-join-private-confirm{
+  padding:10px 22px;border-radius:8px;border:1px solid rgba(100,200,255,0.4);
+  background:rgba(100,200,255,0.08);color:rgba(100,200,255,0.9);
+  font-family:'Rajdhani',sans-serif;font-weight:900;font-size:.9rem;
+  letter-spacing:.1em;text-transform:uppercase;cursor:pointer;transition:all .2s;white-space:nowrap;
+}
+#btn-join-private-confirm:hover{background:rgba(100,200,255,0.16);}
+
+/* ── Public Room List ── */
+#lobby-public-panel{display:none;}
+#lobby-public-panel.open{display:block;}
+.rooms-toolbar{display:flex;gap:10px;padding:14px 22px 10px;align-items:center;}
+.rooms-search{
+  flex:1;background:rgba(255,255,255,0.92);border:1px solid rgba(255,255,255,0.3);
+  color:#1a1a1a;font-family:'Rajdhani',sans-serif;font-size:.85rem;font-weight:600;
+  padding:8px 13px;border-radius:8px;outline:none;transition:border-color .2s;
+}
+.rooms-search:focus{border-color:rgba(100,200,255,0.7);}
+.rooms-search::placeholder{color:rgba(0,0,0,0.35);}
+.rooms-sort{
+  background:rgba(255,255,255,0.88);border:1px solid rgba(255,255,255,0.3);
+  color:#1a1a1a;font-family:'Rajdhani',sans-serif;font-size:.8rem;
+  padding:8px 10px;border-radius:8px;outline:none;cursor:pointer;
+}
+.rooms-list{padding:0 14px 14px;max-height:320px;overflow-y:auto;display:flex;flex-direction:column;gap:8px;}
+.rooms-list::-webkit-scrollbar{width:4px;}
+.rooms-list::-webkit-scrollbar-track{background:transparent;}
+.rooms-list::-webkit-scrollbar-thumb{background:rgba(255,255,255,0.12);border-radius:4px;}
+.rooms-empty{
+  padding:32px;text-align:center;font-family:'Rajdhani',sans-serif;
+  font-size:.85rem;letter-spacing:.1em;text-transform:uppercase;color:rgba(255,255,255,0.2);
+}
+.room-card {
+  display:flex;align-items:center;gap:14px;padding:14px 16px;
+  background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.07);
+  border-radius:10px;cursor:pointer;transition:all .18s;
+}
+.room-card:hover{background:rgba(255,255,255,0.07);border-color:rgba(255,255,255,0.14);transform:translateX(2px);}
+.room-card-icon{font-size:1.4rem;flex-shrink:0;}
+.room-card-info{flex:1;min-width:0;}
+.room-card-name{font-family:'Rajdhani',sans-serif;font-weight:700;font-size:1rem;color:#fff;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.room-card-meta{font-family:'Rajdhani',sans-serif;font-size:.72rem;color:rgba(255,255,255,0.35);
+  letter-spacing:.06em;margin-top:2px;}
+.room-card-right{display:flex;flex-direction:column;align-items:flex-end;gap:4px;flex-shrink:0;}
+.room-card-seats{font-family:'Rajdhani',sans-serif;font-weight:700;font-size:.78rem;
+  color:rgba(100,200,255,0.8);letter-spacing:.06em;}
+.room-card-lock{font-size:.85rem;color:rgba(255,200,0,0.6);}
+.room-card-join{
+  padding:6px 16px;border-radius:6px;border:1px solid rgba(100,200,255,0.35);
+  background:transparent;color:rgba(100,200,255,0.8);
+  font-family:'Rajdhani',sans-serif;font-weight:700;font-size:.75rem;
+  letter-spacing:.1em;text-transform:uppercase;cursor:pointer;transition:all .15s;
+}
+.room-card-join:hover{background:rgba(100,200,255,0.12);}
+.rooms-refresh{
+  background:none;border:1px solid rgba(255,255,255,0.1);color:rgba(255,255,255,0.4);
+  border-radius:8px;padding:8px 12px;cursor:pointer;font-size:.85rem;transition:all .2s;flex-shrink:0;
+}
+.rooms-refresh:hover{color:#fff;border-color:rgba(255,255,255,0.25);}
+
+/* password prompt modal */
+#lobby-pw-modal{
+  display:none;position:fixed;inset:0;z-index:9999;
+  background:rgba(0,0,0,0.7);align-items:center;justify-content:center;
+}
+#lobby-pw-modal.open{display:flex;}
+#lobby-pw-card{
+  background:#0e1e10;border:1px solid rgba(255,255,255,0.1);border-radius:16px;
+  padding:28px 28px 22px;width:320px;display:flex;flex-direction:column;gap:14px;
+}
+#lobby-pw-title{font-family:'Rajdhani',sans-serif;font-weight:700;font-size:1rem;
+  letter-spacing:.1em;text-transform:uppercase;color:#e8a020;}
+#lobby-pw-input{
+  background:rgba(255,255,255,0.9);border:1px solid rgba(255,255,255,0.3);
+  color:#111;font-family:'Rajdhani',sans-serif;font-size:.95rem;font-weight:600;
+  padding:10px 14px;border-radius:8px;outline:none;
+}
+.pw-btns{display:flex;gap:10px;}
+#btn-pw-confirm{
+  flex:1;padding:10px;border-radius:8px;border:1px solid #e8a020;
+  background:rgba(232,160,32,0.12);color:#e8a020;
+  font-family:'Rajdhani',sans-serif;font-weight:900;letter-spacing:.1em;cursor:pointer;
+}
+#btn-pw-cancel{
+  padding:10px 14px;border-radius:8px;border:1px solid rgba(255,255,255,0.1);
+  background:none;color:rgba(255,255,255,0.4);
+  font-family:'Rajdhani',sans-serif;font-weight:700;cursor:pointer;
+}
+
+/* ── Waiting Room ── */
+#waiting-screen {
+  position:fixed;inset:0;z-index:100;
+  background:radial-gradient(ellipse at 50% 35%, #1e4020 0%, #0c1e0e 60%, #060e06 100%);
+  display:flex;align-items:center;justify-content:center;
+}
+#waiting-screen.hidden{display:none!important;}
+#waiting-card{
+  background:rgba(0,0,0,0.4);border:1px solid rgba(255,255,255,0.1);
+  border-radius:22px;padding:36px 40px;display:flex;flex-direction:column;
+  align-items:center;gap:12px;min-width:320px;
+}
+#waiting-logo{font-size:2.4rem;color:#e8a020;}
+#waiting-label{font-family:'Rajdhani',sans-serif;font-size:.65rem;font-weight:700;
+  letter-spacing:.22em;text-transform:uppercase;color:rgba(255,255,255,0.3);margin-bottom:-6px;}
+#waiting-code{font-family:'Rajdhani',sans-serif;font-size:2.8rem;font-weight:900;
+  letter-spacing:.3em;color:#fff;text-align:center;}
+#waiting-code-label{font-family:'Rajdhani',sans-serif;font-size:.72rem;color:rgba(255,255,255,0.25);
+  letter-spacing:.12em;text-transform:uppercase;margin-top:-6px;}
+#waiting-hint{font-family:'Rajdhani',sans-serif;font-size:.8rem;color:rgba(255,255,255,0.35);
+  letter-spacing:.08em;text-align:center;}
+#waiting-room-name{font-family:'Rajdhani',sans-serif;font-size:.9rem;font-weight:700;
+  color:rgba(232,160,32,0.8);letter-spacing:.08em;}
+#waiting-players{display:flex;flex-direction:column;gap:6px;width:100%;min-height:40px;margin:4px 0;}
+.waiting-player{
+  display:flex;align-items:center;gap:8px;font-family:'Rajdhani',sans-serif;font-size:.88rem;
+  font-weight:600;color:rgba(255,255,255,0.75);padding:6px 10px;
+  background:rgba(255,255,255,0.04);border-radius:8px;
+}
+.lobby-crown{font-size:.9rem;}
+#btn-start-game{
+  width:100%;padding:13px;border-radius:10px;border:1px solid #e8a020;
+  background:rgba(232,160,32,0.12);color:#e8a020;
+  font-family:'Rajdhani',sans-serif;font-weight:900;font-size:1rem;
+  letter-spacing:.14em;text-transform:uppercase;cursor:pointer;transition:all .2s;
+}
+#btn-start-game:hover{background:rgba(232,160,32,0.24);}
+#btn-leave-room{
+  background:none;border:1px solid rgba(255,255,255,0.1);color:rgba(255,255,255,0.35);
+  padding:9px 20px;border-radius:8px;cursor:pointer;font-family:'Rajdhani',sans-serif;
+  font-size:.8rem;font-weight:700;letter-spacing:.12em;text-transform:uppercase;transition:all .2s;
+}
+#btn-leave-room:hover{border-color:rgba(255,255,255,0.25);color:rgba(255,255,255,0.6);}
+
+/* hide old lobby btn class if used elsewhere */
+.lobby-btn{ display:none; }
+
+
+/* ── SEAT OWNERSHIP INDICATORS ── */
+/* My seat: gold ring */
+.seat.my-seat-owned { box-shadow: 0 0 0 2px rgba(232,160,32,0.6) !important; }
+/* My seat arrow: small chevron pointing down at the seat */
+.my-seat-arrow {
+  position: absolute;
+  top: -20px; left: 50%; transform: translateX(-50%);
+  width: 0; height: 0;
+  border-left: 7px solid transparent;
+  border-right: 7px solid transparent;
+  border-top: 9px solid #e8a020;
+  filter: drop-shadow(0 2px 6px rgba(232,160,32,0.6));
+  pointer-events: none; z-index: 8;
+  animation: arrowBob 1.8s ease-in-out infinite;
+}
+@keyframes arrowBob {
+  0%,100%{transform:translateX(-50%) translateY(0);}
+  50%{transform:translateX(-50%) translateY(4px);}
+}
+/* Bet timer admin-locked indicator */
+#bet-timer-row.host-locked-off { opacity: 0.38; pointer-events: none; }
+#bet-timer-row.host-locked-off::after {
+  content: 'Host only';
+  font-family: 'Rajdhani', sans-serif; font-size: .62rem; font-weight: 700;
+  letter-spacing: .1em; color: rgba(255,255,255,0.3);
+  display: block; margin-top: 2px;
+}
