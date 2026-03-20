@@ -30,6 +30,8 @@ function makeGs() {
     doubled:        { 1:false, 2:false, 3:false, 4:false, 5:false },
     doubledHands:   { 1:{hand1:false,hand2:false}, 2:{hand1:false,hand2:false}, 3:{hand1:false,hand2:false}, 4:{hand1:false,hand2:false}, 5:{hand1:false,hand2:false} },
     deck:           [],
+    forcedCards:    null,  // { dealer:[c1,c2], seats:{sid:[c1,c2]}, nextHit:{sid:card} }
+    dealLabEnabled: false,
     gameStatus:     'idle',
     activeSeats:    [],
     seatOwners:     {},
@@ -114,7 +116,18 @@ function broadcast(code) {
 }
 
 function dealTo(gs, target) {
-  const card = gs.deck.pop();
+  let card = null;
+  // Check if there's a forced card override
+  if (gs.forcedCards && gs.dealLabEnabled) {
+    if (target === 'dealer' && gs.forcedCards.dealer && gs.forcedCards.dealer.length) {
+      card = gs.forcedCards.dealer.shift();
+    } else if (target !== 'dealer') {
+      const sid = String(target);
+      const fc = gs.forcedCards.seats?.[sid];
+      if (fc && fc.length) { card = fc.shift(); }
+    }
+  }
+  if (!card) card = gs.deck.pop();
   if (!card) return;
   if (target === 'dealer') { gs.hands.dealer.push(card); return; }
   const sid = String(target);
@@ -251,16 +264,20 @@ function advanceInsuranceQueue(code) {
     return;
   }
   const { sid, ownerId } = gs.insuranceQueue[gs.insuranceQueueIndex];
+  const cost = Math.floor((gs.bets[sid]?.main || 0) / 2);
+  const owner = room.players[ownerId];
+  // If player can't afford insurance, skip them automatically
+  if (!owner || owner.wallet < cost) {
+    gs.insuranceQueueIndex++;
+    advanceInsuranceQueue(code);
+    return;
+  }
   gs.insuranceCurrentSid = sid;
   broadcast(code);
-  // Emit to the owner of this seat
-  io.to(ownerId).emit('insuranceOfferSeat', {
-    sid,
-    cost: Math.floor((gs.bets[sid]?.main || 0) / 2),
-  });
+  io.to(ownerId).emit('insuranceOfferSeat', { sid, cost });
 }
 
-function checkBJ(code) {
+async function checkBJ(code) {
   const room = rooms[code];
   const { gs, players } = room;
 
@@ -271,6 +288,11 @@ function checkBJ(code) {
   const dBJ = score(gs.hands.dealer) === 21 && gs.hands.dealer.length === 2;
 
   if (dBJ && upCard && upCard.value === 'A') {
+    // Reveal dealer hole card so players see the BJ before resolution
+    gs.dealerRevealed = true;
+    broadcast(code);
+    // Small pause so the flip animation plays
+    await delay(1400);
     for (const sid of gs.activeSeats) {
       const ins = gs.insurance[sid] || 0;
       if (ins > 0) {
@@ -486,6 +508,11 @@ async function startDeal(code) {
   for (const sid of rtl) { dealTo(gs, sid); broadcast(code); await delay(300); }
   dealTo(gs, 'dealer'); broadcast(code); await delay(500);
 
+  // Clear forced cards after initial deal
+  if (gs.forcedCards) {
+    gs.forcedCards.dealer = [];
+    Object.keys(gs.forcedCards.seats||{}).forEach(k => gs.forcedCards.seats[k] = []);
+  }
   resolveSideBets(code);
   broadcast(code);
   await delay(200);
@@ -816,6 +843,12 @@ io.on('connection', (socket) => {
     const player = players[socket.id];
 
     if (action === 'hit') {
+      // Inject forced next-hit card at top of deck if set
+      if (gs.dealLabEnabled && gs.forcedCards?.nextHit?.[sid]) {
+        gs.deck.push(gs.forcedCards.nextHit[sid]);
+        delete gs.forcedCards.nextHit[sid];
+        if (!Object.keys(gs.forcedCards.nextHit).length) delete gs.forcedCards.nextHit;
+      }
       dealTo(gs, sid);
       const hand = gs.splitActive[sid] ? gs.hands[sid]['hand'+(gs.splitHandIndex[sid]+1)] : gs.hands[sid];
       const sc = score(hand);
@@ -881,6 +914,20 @@ io.on('connection', (socket) => {
     }
     gs.insuranceQueueIndex++;
     advanceInsuranceQueue(code);
+  });
+
+  socket.on('dealLabToggle', ({ on }) => {
+    const code = socket.data.code;
+    const room = rooms[code];
+    if (!room || room.hostId !== socket.id) return;
+    room.gs.dealLabEnabled = !!on;
+  });
+
+  socket.on('forceDeck', (forced) => {
+    const code = socket.data.code;
+    const room = rooms[code];
+    if (!room || room.hostId !== socket.id) return;
+    room.gs.forcedCards = forced;
   });
 
   socket.on('disconnect', () => {
