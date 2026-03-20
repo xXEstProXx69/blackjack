@@ -72,6 +72,7 @@
   <div id="settings-modal" class="hidden">
     <div id="settings-card">
       <h2 id="settings-title">⚙ Settings</h2>
+      <div id="settings-version">v0.03</div>
       <div class="setting-row">
         <label>Display Name</label>
         <div class="setting-control setting-name-row">
@@ -153,7 +154,6 @@
       <div id="table-rules">Dealer must draw to 16 and stand on all 17s</div>
     </div>
     <div id="dealer-area">
-      <div class="area-label">Dealer</div>
       <div id="dealer-hand"></div>
       <div class="score-display hidden" id="dealer-score">0</div>
     </div>
@@ -237,14 +237,10 @@
     <div id="status-message">Waiting for players…</div>
   </div>
 
-  <!-- Action buttons float beside chip tray -->
-  <div id="action-btn-left" class="side-action-btn hidden">
-    <button id="btn-undo" class="chip-action-btn undo-btn">&#x21A9; Undo</button>
-  </div>
-  <div id="action-btn-right" class="side-action-btn hidden">
-    <button id="btn-rebet" class="chip-action-btn rebet-btn hidden">&#x21BA; Rebet</button>
-    <button id="btn-2x"    class="chip-action-btn x2-btn hidden">2&times;</button>
-  </div>
+  <!-- Action buttons: fixed-positioned beside chip tray via CSS IDs -->
+  <button id="btn-undo" class="chip-action-btn undo-btn hidden">&#x21A9; Undo</button>
+  <button id="btn-rebet" class="chip-action-btn rebet-btn hidden">&#x21BA; Rebet</button>
+  <button id="btn-2x" class="chip-action-btn x2-btn hidden">2&times;</button>
 
   <!-- Deal button: below undo/rebet row -->
   <div id="deal-btn-wrap" class="hidden">
@@ -282,14 +278,6 @@
       <span class="cubic-icon">2×</span>
       <span class="cubic-label">DOUBLE</span>
     </button>
-    <button id="btn-hit" class="action-cubic action-hit">
-      <span class="cubic-icon">+</span>
-      <span class="cubic-label">HIT</span>
-    </button>
-    <button id="btn-stand" class="action-cubic action-stand">
-      <span class="cubic-icon">−</span>
-      <span class="cubic-label">STAND</span>
-    </button>
     <button id="btn-split" class="action-cubic action-split hidden">
       <span class="cubic-icon">
         <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
@@ -300,6 +288,14 @@
         </svg>
       </span>
       <span class="cubic-label">SPLIT</span>
+    </button>
+    <button id="btn-hit" class="action-cubic action-hit">
+      <span class="cubic-icon">+</span>
+      <span class="cubic-label">HIT</span>
+    </button>
+    <button id="btn-stand" class="action-cubic action-stand">
+      <span class="cubic-icon">−</span>
+      <span class="cubic-label">STAND</span>
     </button>
   </div>
 
